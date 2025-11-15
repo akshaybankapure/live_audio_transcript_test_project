@@ -63,7 +63,7 @@ A full-stack web application for monitoring structured group discussions in Indi
 
 ### External Services
 - **Soniox API** - Speech-to-text transcription
-- **PostgreSQL** - Database (Neon, Supabase, RDS, etc.)
+- **PostgreSQL** - Database (Neon)
 
 ## Prerequisites
 
