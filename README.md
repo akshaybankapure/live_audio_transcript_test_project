@@ -6,7 +6,7 @@ A full-stack web application for monitoring structured group discussions in Indi
 
 ## Features
 
-### Real-Time Signals (Assignment Requirements)
+### Real-Time Signals 
 
 **Immediate Alerts** (Near Real-Time):
 - **Foul/Inappropriate Language**: Real-time detection and flagging with context and speaker identification
@@ -38,7 +38,6 @@ A full-stack web application for monitoring structured group discussions in Indi
 
 ### Data Management
 - **Persistent Storage**: PostgreSQL database for transcripts, users, and flagged content
-- **Object Storage**: Google Cloud Storage for audio files with ACL-based access control
 - **Session Management**: Device-based authentication with session persistence
 - **Data Ownership**: User ownership validation on all API endpoints
 
@@ -61,12 +60,10 @@ A full-stack web application for monitoring structured group discussions in Indi
 - **PostgreSQL** - Primary database
 - **WebSockets (ws)** - Real-time communication
 - **express-session** - Session management
-- **Google Cloud Storage** - Object storage
 
 ### External Services
 - **Soniox API** - Speech-to-text transcription
 - **PostgreSQL** - Database (Neon, Supabase, RDS, etc.)
-- **Google Cloud Storage** - Audio file storage
 
 ## Prerequisites
 
@@ -74,29 +71,19 @@ Before setting up the project, ensure you have the following:
 
 ### Required Software
 - **Node.js** 20+ and npm (check with `node --version` and `npm --version`)
-- **PostgreSQL** database (local installation or cloud-hosted service)
-- **Git** (for cloning the repository)
 
 ### Required Services & API Keys
-- **PostgreSQL Database**: 
-  - Local: Install PostgreSQL locally or use Docker
-  - Cloud: Use Neon, Supabase, AWS RDS, or any PostgreSQL hosting service
-- **Google Cloud Storage**: 
-  - Create a GCS bucket for audio file storage
-  - Set up a service account with Storage Admin role
+- **PostgreSQL Database URL**: Provided database connection string
 - **Soniox API**: 
   - Sign up at [Soniox](https://soniox.com) to get an API key
   - Required for real-time speech-to-text transcription
 
-### Optional
-- **ffmpeg**: For future audio processing features (not required for MVP)
-
 ## Installation & Setup
 
-### Step 1: Clone the Repository
+### Step 1: Extract the Project
 
    ```bash
-   git clone <repository-url>
+   unzip AudioTranscriptLive.zip
    cd AudioTranscriptLive
    ```
 
@@ -108,70 +95,30 @@ Before setting up the project, ensure you have the following:
 
 This will install all required Node.js packages for both frontend and backend.
 
-### Step 3: Set Up PostgreSQL Database
-   
-#### Option A: Local PostgreSQL
-1. Install PostgreSQL on your machine
-2. Create a new database:
-   ```bash
-   createdb audio_transcript_db
-   ```
-3. Note your connection string format: `postgresql://username:password@localhost:5432/audio_transcript_db`
-
-#### Option B: Cloud PostgreSQL (Recommended for Production)
-1. Create a database on [Neon](https://neon.tech), [Supabase](https://supabase.com), or AWS RDS
-2. Copy the connection string provided by your hosting service
-3. Format: `postgresql://user:password@host:5432/dbname`
-
-### Step 4: Set Up Google Cloud Storage
-
-1. **Create a GCS Bucket**:
-   - Go to [Google Cloud Console](https://console.cloud.google.com)
-   - Navigate to Cloud Storage → Buckets
-   - Create a new bucket (e.g., `audio-transcript-storage`)
-
-2. **Create Service Account**:
-   - Go to IAM & Admin → Service Accounts
-   - Create a new service account
-   - Grant it the "Storage Admin" role
-   - Create and download a JSON key file
-
-3. **Save the key file** in your project directory (e.g., `gcs-key.json`)
-
-### Step 5: Get Soniox API Key
+### Step 3: Get Soniox API Key
 
 1. Sign up at [Soniox](https://soniox.com)
 2. Navigate to your API keys section
 3. Create a new API key
 4. Copy the key for use in environment variables
 
-### Step 6: Configure Environment Variables
+### Step 4: Configure Environment Variables
 
 Create a `.env` file in the root directory:
 
 ```bash
-# Database Connection (REQUIRED)
-   DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+# Database Connection (REQUIRED - provided)
+DATABASE_URL=postgresql://user:password@host.neon.tech/dbname?sslmode=require
    
 # Session Secret (REQUIRED) - Generate a random 32+ character string
 SESSION_SECRET=your-random-secret-key-here-minimum-32-characters
    
 # Soniox API (REQUIRED)
 SONIOX_API_KEY=your-soniox-api-key-here
-   
-# Google Cloud Storage (REQUIRED)
-PRIVATE_OBJECT_DIR=your-bucket-name
-# Option 1: Path to service account key file
-GOOGLE_APPLICATION_CREDENTIALS=./gcs-key.json
-# Option 2: OR use JSON string directly (alternative to file path)
-# GCS_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"..."}
 
 # Language Policy (OPTIONAL - defaults to 'en')
 ALLOWED_LANGUAGE=en
 
-# CORS Configuration (OPTIONAL - only needed for separate frontend/backend deployment)
-   ALLOWED_ORIGIN=https://your-frontend-domain.com
-   
 # Server Port (OPTIONAL - defaults to 5000)
 PORT=5000
 
@@ -183,7 +130,7 @@ NODE_ENV=development
 - Generate a secure `SESSION_SECRET` using: `openssl rand -base64 32` or any random string generator
 - Never commit the `.env` file to version control (it's already in `.gitignore`)
 
-### Step 7: Initialize Database Schema
+### Step 5: Initialize Database Schema
 
 Run the database migration to create all required tables:
 
@@ -201,7 +148,7 @@ This will create the following tables:
 
 **Verify**: Check your database to confirm tables were created successfully.
 
-### Step 8: Start the Development Server
+### Step 6: Start the Development Server
 
 ```bash
 npm run dev
@@ -213,7 +160,7 @@ This command:
 - Enables hot module replacement (HMR) for instant updates
 - Serves the application on `http://localhost:5000`
 
-### Step 9: Verify Installation
+### Step 7: Verify Installation
 
 1. **Open your browser** and navigate to `http://localhost:5000`
 2. **Check the console** for any errors
@@ -289,12 +236,9 @@ This helps catch type errors before running the application.
 ## First-Time Setup Checklist
 
 - [ ] Node.js 20+ installed and verified
-- [ ] Repository cloned
+- [ ] Project extracted
 - [ ] Dependencies installed (`npm install`)
-- [ ] PostgreSQL database created and accessible
-- [ ] Google Cloud Storage bucket created
-- [ ] GCS service account created with Storage Admin role
-- [ ] GCS service account key file downloaded
+- [ ] Database URL obtained
 - [ ] Soniox API key obtained
 - [ ] `.env` file created with all required variables
 - [ ] Database schema initialized (`npm run db:push`)
@@ -307,26 +251,14 @@ This helps catch type errors before running the application.
 ### Environment Variables
 
 #### Required
-- `DATABASE_URL`: PostgreSQL connection string
+- `DATABASE_URL`: PostgreSQL connection string (provided)
 - `SESSION_SECRET`: Random secret for session encryption (32+ characters recommended)
 - `SONIOX_API_KEY`: Your Soniox API key
-- `PRIVATE_OBJECT_DIR`: Google Cloud Storage bucket name or path
 
 #### Optional
 - `ALLOWED_LANGUAGE`: Language policy enforcement - language students must speak (default: 'en')
-- `ALLOWED_ORIGIN`: Frontend origin for CORS (comma-separated for multiple origins)
-- `VITE_API_URL`: Backend API URL for frontend (defaults to relative paths)
-- `GOOGLE_APPLICATION_CREDENTIALS`: Path to GCS service account key file
-- `GCS_SERVICE_ACCOUNT_KEY`: JSON string of GCS service account credentials
 - `PORT`: Server port (default: 5000)
 - `NODE_ENV`: Environment mode (development/production)
-
-### Google Cloud Storage Setup
-
-1. Create a GCS bucket
-2. Create a service account with Storage Admin role
-3. Download the service account key JSON file
-4. Set either `GOOGLE_APPLICATION_CREDENTIALS` (file path) or `GCS_SERVICE_ACCOUNT_KEY` (JSON string)
 
 ### Database Setup
 
@@ -422,15 +354,6 @@ Deploy both frontend and backend together on a single server.
 - `GET /api/transcripts` - Get user's transcripts
 - `GET /api/transcripts/:id` - Get single transcript
 
-### Audio Upload
-- `POST /api/upload-audio` - Upload audio file for transcription
-- `GET /api/transcription/:id` - Poll transcription status
-
-### Object Storage
-- `POST /api/objects/upload` - Get presigned upload URL
-- `POST /api/save-audio` - Save uploaded audio with ACL policy
-- `GET /objects/:objectPath(*)` - Download object (with access control)
-
 ### Dashboard
 - `GET /api/dashboard/overview` - Get dashboard overview
 - `GET /api/dashboard/device/:deviceId` - Get device details
@@ -448,13 +371,13 @@ Deploy both frontend and backend together on a single server.
 
 - **Session-Based Authentication**: Secure session management with HttpOnly cookies
 - **User Ownership Validation**: All API endpoints validate user ownership
-- **ACL-Based Access Control**: Object storage files protected by access control lists
-- **CORS Configuration**: Configurable CORS for cross-origin requests
 - **Role-Based Access**: Admin endpoints protected by role validation
 - **Input Validation**: Zod schemas for request validation
 
 ## Documentation
 
+- **[PRODUCT_NOTE.md](./PRODUCT_NOTE.md)**: Product framing, MVP scope, design decisions, and trade-offs
+- **[TECHNICAL_NOTE.md](./TECHNICAL_NOTE.md)**: Architecture, technical decisions, alert computation, limitations, and improvements
 - **[docs/setup.md](./docs/setup.md)**: Quick setup and run instructions
 - **[docs/performance.md](./docs/performance.md)**: Performance characteristics, load time expectations, and optimization details
 
@@ -515,11 +438,6 @@ Planned enhancements (see [docs/audio-capture-architecture.md](./docs/audio-capt
 - Ensure database is accessible from your network
 - Check database credentials and permissions
 
-**Object storage errors**
-- Verify GCS credentials are set correctly
-- Check bucket name in `PRIVATE_OBJECT_DIR`
-- Ensure service account has Storage Admin role
-
 ## License
 
 MIT
@@ -529,5 +447,4 @@ MIT
 For issues or questions:
 - Review server logs and browser console
 - Consult Soniox API documentation for transcription-related issues
-- Review Google Cloud Storage documentation for storage issues
 
