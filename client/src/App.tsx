@@ -54,7 +54,7 @@ function Navigation() {
     if (user) {
       // Prefetch dashboard data immediately after auth
       queryClient.prefetchQuery({
-        queryKey: ['/api/dashboard/overview'],
+        queryKey: ['/api/dashboard/overview?timeRange=live'],
       });
       // Prefetch other frequently used data
       queryClient.prefetchQuery({

@@ -25,6 +25,7 @@ import {
   Filter
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getQueryFn } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface DeviceOverview {
@@ -77,6 +78,8 @@ export default function Dashboard() {
   const { data: user } = useQuery({
     queryKey: ['/api/auth/user'],
     retry: false,
+    // Tolerate unauthenticated state without throwing; returns null
+    queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
   // Fetch available transcripts for session selector
@@ -101,6 +104,8 @@ export default function Dashboard() {
     queryKey: [`/api/dashboard/overview?${queryParams.toString()}`],
     placeholderData: (previousData) => previousData,
     refetchOnMount: true,
+    // Only fetch once we know the auth state; prevents initial 401 error path
+    enabled: user !== undefined && user !== null,
   });
 
   // WebSocket connection for real-time alerts (all authenticated users)
