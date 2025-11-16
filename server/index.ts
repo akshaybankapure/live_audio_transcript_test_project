@@ -29,6 +29,7 @@ import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { storage } from "./storage";
+import compression from "compression";
 
 const app = express();
 
@@ -63,6 +64,14 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false }));
+
+// Enable response compression for faster payload delivery
+app.use(
+  compression({
+    threshold: 1024, // compress responses > 1KB
+    // let Node negotiate best encoding with client (gzip/br), defaults are fine
+  })
+);
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -123,11 +132,7 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5000', 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true,
-  }, () => {
+  server.listen({port, host:"0.0.0.0", reusePort: false}, () => {
     log(`serving on port ${port}`);
   });
 })();
