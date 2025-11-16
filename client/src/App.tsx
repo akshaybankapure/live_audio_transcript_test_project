@@ -56,6 +56,13 @@ function Navigation() {
       queryClient.prefetchQuery({
         queryKey: ['/api/dashboard/overview'],
       });
+      // Prefetch other frequently used data
+      queryClient.prefetchQuery({
+        queryKey: ['/api/transcripts'],
+      });
+      queryClient.prefetchQuery({
+        queryKey: ['/api/flagged-content'],
+      });
     }
   }, [user, queryClient]);
   

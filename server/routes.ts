@@ -14,6 +14,7 @@ import { requireAdmin } from "./middleware/requireAdmin";
 import multer from "multer";
 import fs from "fs";
 import crypto from "crypto";
+import { buildUserScopedKey, serverCache, setPrivateCacheHeaders } from "./cache";
 
 const upload = multer({ dest: "uploads/" });
 
@@ -107,8 +108,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
+      const cacheKey = buildUserScopedKey(userId, '/api/auth/user');
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 30, 60);
+        return res.json(cached);
+      }
       const user = await storage.getUser(userId);
-      res.json(user);
+      setPrivateCacheHeaders(res, 30, 60);
+      serverCache.set(cacheKey, user, 30_000);
+      return res.json(user);
     } catch (error) {
       console.error("Error fetching user:", error);
       res.status(500).json({ message: "Failed to fetch user" });
@@ -605,8 +614,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/transcripts", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
+      const cacheKey = buildUserScopedKey(userId, '/api/transcripts');
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 60, 120);
+        return res.json(cached);
+      }
       const transcripts = await storage.getUserTranscripts(userId);
-      res.json(transcripts);
+      setPrivateCacheHeaders(res, 60, 120);
+      serverCache.set(cacheKey, transcripts, 60_000);
+      return res.json(transcripts);
     } catch (error) {
       console.error("Error fetching transcripts:", error);
       res.status(500).json({ error: "Failed to fetch transcripts" });
@@ -617,8 +634,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/flagged-content", isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
+      const cacheKey = buildUserScopedKey(userId, '/api/flagged-content');
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 60, 120);
+        return res.json(cached);
+      }
       const flaggedContent = await storage.getUserFlaggedContent(userId);
-      res.json(flaggedContent);
+      setPrivateCacheHeaders(res, 60, 120);
+      serverCache.set(cacheKey, flaggedContent, 60_000);
+      return res.json(flaggedContent);
     } catch (error) {
       console.error("Error fetching flagged content:", error);
       res.status(500).json({ error: "Failed to fetch flagged content" });
@@ -636,19 +661,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const endDate = req.query.endDate ? new Date(req.query.endDate) : undefined;
       const transcriptId = req.query.transcriptId || undefined;
       
-      const overview = await storage.getDashboardOverview({
+      const queryOpts = {
         timeRange: timeRange as 'live' | 'all' | 'custom' | '1h' | '12h' | 'today' | 'session',
         startDate,
         endDate,
         transcriptId,
+      };
+
+      const cacheKey = buildUserScopedKey(currentUserId, '/api/dashboard/overview', {
+        timeRange,
+        startDate: startDate?.toISOString(),
+        endDate: endDate?.toISOString(),
+        transcriptId,
       });
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 60, 120);
+        return res.json({ devices: cached, currentUserId });
+      }
+      const overview = await storage.getDashboardOverview(queryOpts);
       
-      // Add cache headers for better performance (5 minutes)
-      res.set({
-        'Cache-Control': 'private, max-age=300, stale-while-revalidate=600',
-      });
-      
-      res.json({ devices: overview, currentUserId });
+      // Add cache headers for better performance
+      setPrivateCacheHeaders(res, 60, 120);
+      serverCache.set(cacheKey, overview, 60_000);
+      return res.json({ devices: overview, currentUserId });
     } catch (error) {
       console.error("Error fetching dashboard overview:", error);
       res.status(500).json({ error: "Failed to fetch dashboard overview" });
@@ -659,13 +695,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/dashboard/device/:deviceId", isAuthenticated, async (req: any, res) => {
     try {
       const { deviceId } = req.params;
+      const cacheKey = `device:${deviceId}|path:/api/dashboard/device`;
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 60, 120);
+        return res.json(cached);
+      }
       const deviceData = await storage.getDeviceDashboard(deviceId);
       
       if (!deviceData) {
         return res.status(404).json({ error: "Device not found" });
       }
 
-      res.json(deviceData);
+      setPrivateCacheHeaders(res, 60, 120);
+      serverCache.set(cacheKey, deviceData, 60_000);
+      return res.json(deviceData);
     } catch (error) {
       console.error("Error fetching device dashboard:", error);
       res.status(500).json({ error: "Failed to fetch device dashboard" });
@@ -675,6 +719,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Admin monitoring: Get dashboard stats for all devices
   app.get("/api/dashboard/stats", requireAdmin, async (req: any, res) => {
     try {
+      const cacheKey = `admin:stats|path:/api/dashboard/stats`;
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 30, 60);
+        return res.json(cached);
+      }
       const overview = await storage.getDashboardOverview();
       
       // Calculate aggregate stats
@@ -690,12 +740,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalProfanity: device.flagCount,
       }));
 
-      res.json({
+      const payload = {
         devices,
         totalDevices,
         totalSessions,
         totalProfanity,
-      });
+      };
+      setPrivateCacheHeaders(res, 30, 60);
+      serverCache.set(cacheKey, payload, 30_000);
+      return res.json(payload);
     } catch (error) {
       console.error("Error fetching dashboard stats:", error);
       res.status(500).json({ error: "Failed to fetch dashboard stats" });
@@ -707,6 +760,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { id } = req.params;
       const userId = req.user.claims.sub;
+      const cacheKey = buildUserScopedKey(userId, `/api/transcripts/${id}`);
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 60, 120);
+        return res.json(cached);
+      }
       
       const transcript = await storage.getTranscript(id);
       if (!transcript) {
@@ -719,11 +778,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const flaggedContent = await storage.getTranscriptFlaggedContent(id);
-      
-      res.json({
+      const payload = {
         ...transcript,
         flaggedContent,
-      });
+      };
+      setPrivateCacheHeaders(res, 60, 120);
+      serverCache.set(cacheKey, payload, 60_000);
+      return res.json(payload);
     } catch (error) {
       console.error("Error fetching transcript:", error);
       res.status(500).json({ error: "Failed to fetch transcript" });
