@@ -8,6 +8,7 @@ import {
 } from "./objectStorage";
 import { detectProfanity } from "./profanityDetector";
 import { analyzeContent, analyzeSegment } from "./contentAnalyzer";
+import { reviewFlagsWithGroq } from "./llmReview";
 import { qualityLogger } from "./qualityLogger";
 import { websocketService } from "./websocketService";
 import { requireAdmin } from "./middleware/requireAdmin";
@@ -340,14 +341,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Process each new segment individually
       // Pass all segments for participation analysis
+      const collatedNewFlagged: any[] = [];
       for (const segment of recentSegments) {
         const analysis = analyzeSegment(segment, id, allowedLanguage, allSegments, topicConfig, participationConfig);
+        
+        // Prepare proposed flags
+        let proposed = {
+          profanity: analysis.profanity,
+          languagePolicy: analysis.languagePolicy,
+          offTopic: analysis.offTopic,
+        };
+        // Optional LLM review (guarded by env)
+        const reviewed = await reviewFlagsWithGroq(id, segment, proposed, {
+          topicPrompt: topicConfig?.topicPrompt,
+          topicKeywords: topicConfig?.topicKeywords,
+          allowedLanguage,
+        });
 
         // Handle profanity flags (separate flag type)
-        for (const flagged of analysis.profanity) {
+        for (const flagged of reviewed.profanity) {
           await storage.createFlaggedContent(flagged);
           totalNewFlags++;
           profanityCount++;
+          collatedNewFlagged.push(flagged);
           
           // Broadcast real-time alert
           websocketService.broadcastAlert({
@@ -364,10 +380,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         // Handle language policy violations (separate flag type)
-        for (const violation of analysis.languagePolicy) {
+        for (const violation of reviewed.languagePolicy) {
           await storage.createFlaggedContent(violation);
           totalNewFlags++;
           languagePolicyCount++;
+          collatedNewFlagged.push(violation);
           
           // Broadcast real-time alert
           websocketService.broadcastAlert({
@@ -384,10 +401,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
 
         // Handle off-topic flags (separate flag type)
-        for (const offTopic of analysis.offTopic) {
+        for (const offTopic of reviewed.offTopic) {
           await storage.createFlaggedContent(offTopic);
           totalNewFlags++;
           offTopicCount++;
+          collatedNewFlagged.push(offTopic);
           
           // Broadcast real-time alert
           websocketService.broadcastAlert({
@@ -407,6 +425,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const participation of analysis.participation) {
           await storage.createFlaggedContent(participation);
           totalNewFlags++;
+          collatedNewFlagged.push(participation);
           
           // Broadcast real-time alert
           websocketService.broadcastAlert({
@@ -437,10 +456,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const final = await storage.getTranscript(id);
       res.json({
         ...final,
-        newFlaggedItems: recentSegments.flatMap(segment => {
-          const analysis = analyzeSegment(segment, id, allowedLanguage, allSegments, topicConfig, participationConfig);
-          return [...analysis.profanity, ...analysis.languagePolicy, ...analysis.offTopic, ...analysis.participation];
-        }),
+        newFlaggedItems: collatedNewFlagged,
       });
     } catch (error) {
       console.error("Error appending segments:", error);
@@ -542,10 +558,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
           participationConfig
         );
         
-        // Save all flagged content (including off-topic segments)
-        for (const flagged of analysis.allFlaggedItems) {
-          await storage.createFlaggedContent(flagged);
+        // Re-validate flags with LLM (if available) before saving
+        const allowedLanguage = process.env.ALLOWED_LANGUAGE || 'en';
+        const reviewedAll: any[] = [];
+        for (const segment of segments) {
+          const perSeg = analyzeSegment(segment, id, allowedLanguage, segments, topicConfig, participationConfig);
+          const proposed = {
+            profanity: perSeg.profanity,
+            languagePolicy: perSeg.languagePolicy,
+            offTopic: perSeg.offTopic,
+          };
+          const reviewed = await reviewFlagsWithGroq(id, segment, proposed, {
+            topicPrompt: topicConfig?.topicPrompt,
+            topicKeywords: topicConfig?.topicKeywords,
+            allowedLanguage,
+          });
+          reviewedAll.push(...reviewed.profanity, ...reviewed.languagePolicy, ...reviewed.offTopic, ...perSeg.participation);
         }
+        for (const flagged of reviewedAll) await storage.createFlaggedContent(flagged);
 
         // Update participation balance and topic adherence
         await storage.updateParticipationBalance(id, analysis.participation);

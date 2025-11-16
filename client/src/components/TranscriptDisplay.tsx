@@ -33,7 +33,6 @@ export default function TranscriptDisplay({
   onSegmentClick,
   languages = [],
 }: TranscriptDisplayProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
   const activeSegmentRef = useRef<HTMLDivElement>(null);
 
   const activeSegmentIndex = segments.findIndex(
@@ -42,10 +41,10 @@ export default function TranscriptDisplay({
   );
 
   useEffect(() => {
-    if (activeSegmentRef.current && scrollRef.current) {
+    if (activeSegmentRef.current) {
       activeSegmentRef.current.scrollIntoView({
         behavior: "smooth",
-        block: "center",
+        block: "nearest",
       });
     }
   }, [activeSegmentIndex]);
@@ -74,7 +73,7 @@ export default function TranscriptDisplay({
           </div>
         )}
       </div>
-      <ScrollArea className="flex-1" ref={scrollRef}>
+      <ScrollArea className="flex-1">
         <div className="p-6 space-y-3">
           {segments.map((segment, index) => (
             <div

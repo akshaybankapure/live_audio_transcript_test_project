@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog,
   DialogContent,
@@ -55,6 +56,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   const lastAppendTimeRef = useRef<number>(0); // Track last append time for batching
   const pendingStartRef = useRef<(() => void) | null>(null); // Store pending start function
   const { toast} = useToast();
+  const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Cleanup on unmount
@@ -67,6 +69,11 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
       }
     };
   }, []);
+
+  // Auto-scroll to bottom as live transcript grows
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [segments, currentNonFinalTokens]);
 
   const getLanguageHints = () => {
     if (selectedLanguage === "auto") {
@@ -558,7 +565,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   };
 
   return (
-    <div className="space-y-4">
+    <div className="h-full flex flex-col gap-4 min-h-0">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           {!isRecording && !isInitializing ? (
@@ -643,19 +650,26 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
         </Card>
       )}
 
-      <div className="space-y-3">
-        {segments.map((segment, index) => (
-          <TranscriptSegment
-            key={index}
-            segment={segment}
-            isActive={false}
-            onClick={() => {}}
-            speakerColor={getSpeakerColor(segment.speaker)}
-          />
-        ))}
-        
-        {renderNonFinalTokens()}
-      </div>
+      <Card className="flex-1 flex flex-col min-h-0">
+        <div className="p-3 border-b border-card-border">
+          <h2 className="text-sm font-medium">Live Transcript</h2>
+        </div>
+        <ScrollArea className="flex-1">
+          <div className="p-3 space-y-3">
+            {segments.map((segment, index) => (
+              <TranscriptSegment
+                key={index}
+                segment={segment}
+                isActive={false}
+                onClick={() => {}}
+                speakerColor={getSpeakerColor(segment.speaker)}
+              />
+            ))}
+            {renderNonFinalTokens()}
+            <div ref={endRef} />
+          </div>
+        </ScrollArea>
+      </Card>
 
       {segments.length === 0 && !isRecording && (
         <Card className="p-8 text-center">
