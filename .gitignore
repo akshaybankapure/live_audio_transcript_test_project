@@ -1,0 +1,53 @@
+### Node / TypeScript
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+### Build outputs
+dist/
+build/
+client/dist/
+
+### Vite
+.vite/
+node_modules/.vite/
+
+### Coverage / test
+coverage/
+.nyc_output/
+
+### Env files (keep example templates)
+.env
+.env.*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+### OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+### Misc
+tmp/
+temp/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+### Keys / certs
+*.pem
+*.key
+*.crt
+
+### Databases
+*.sqlite
+*.db
+
+
