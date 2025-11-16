@@ -138,7 +138,7 @@ export default function Home() {
           </TabsList>
 
           <TabsContent value="upload" className="mt-6">
-            <div className="grid lg:grid-cols-[350px,1fr] gap-6">
+            <div className="grid lg:grid-cols-[350px,1fr] gap-6 min-h-0">
           <div className="space-y-6">
             <div>
               <h2 className="text-sm font-medium mb-3">Audio Input</h2>
@@ -176,7 +176,7 @@ export default function Home() {
             )}
           </div>
 
-          <div className="h-[calc(100vh-12rem)]">
+          <div className="h-[calc(100vh-12rem)] min-h-0 overflow-hidden">
             <TranscriptDisplay
               segments={segments}
               currentTime={currentTime}
@@ -188,7 +188,7 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="live" className="mt-6">
-            <div className="grid lg:grid-cols-[350px,1fr] gap-6">
+            <div className="grid lg:grid-cols-[350px,1fr] gap-6 min-h-0">
               <div className="space-y-6">
                 <div>
                   <h2 className="text-sm font-medium mb-3">Live Recording</h2>
@@ -199,7 +199,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="h-[calc(100vh-12rem)]">
+              <div className="h-[calc(100vh-12rem)] min-h-0 overflow-hidden">
                 <Suspense fallback={
                   <div className="flex items-center justify-center h-full">
                     <Loader2 className="h-8 w-8 animate-spin text-primary" />

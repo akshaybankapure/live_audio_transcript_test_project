@@ -60,7 +60,7 @@ export default function TranscriptDisplay({
   }
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex flex-col h-full min-h-0 overflow-hidden">
       <div className="p-4 border-b border-card-border flex items-center justify-between">
         <h2 className="text-lg font-semibold">Transcript</h2>
         {languages.length > 0 && (
