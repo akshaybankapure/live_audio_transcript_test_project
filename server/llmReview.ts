@@ -30,7 +30,12 @@ function buildSystemPrompt(config: LlmReviewConfig): string {
     "- Profanity: only flag explicit offensive words or slurs. Ignore markup like <end>.",
     "- Language policy: flag only if the spoken language is clearly not the allowed language; minor loanwords are OK.",
     "- Off-topic: flag only if the utterance clearly diverges from the given topic; short greetings or transitions are not off-topic.",
-    "Return a strict JSON with fields: profanity[], languagePolicy[], offTopic[] of items to keep, each item must include transcriptId, flaggedWord, context, timestampMs, speaker, flagType.",
+    "Return a strict JSON with fields: profanity[], languagePolicy[], offTopic[] of items to keep.",
+    "Each item must include: transcriptId, flaggedWord, context, timestampMs, speaker, flagType.",
+    "IMPORTANT: The 'context' field should include a clear explanation of WHY the content was flagged.",
+    "For profanity: explain which word is offensive and why (e.g., 'Contains profanity: [word] is an inappropriate term').",
+    "For language policy: explain what language was detected and why it violates policy (e.g., 'Detected [language] instead of required [allowed language]').",
+    "For off-topic: explain how the content diverges from the topic (e.g., 'Content about [topic] is not related to the discussion topic: [actual topic]').",
   ].join(" ");
 }
 

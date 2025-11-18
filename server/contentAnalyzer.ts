@@ -124,7 +124,7 @@ export function analyzeSegment(
     languageItems.push({
       transcriptId,
       flaggedWord: segment.language,
-      context: segment.text.substring(0, 100),
+      context: `Language policy violation: Detected ${segment.language} instead of required ${allowedLanguage}. Content: "${segment.text.substring(0, 100)}"`,
       timestampMs: Math.floor(startTimeMs),
       speaker: segment.speaker,
       flagType: 'language_policy',
@@ -162,10 +162,11 @@ export function analyzeSegment(
 
   // Flag as off-topic if no topic keywords and has off-topic indicators
   if (!hasTopicKeyword && hasOffTopicIndicators) {
+    const topicContext = topicConfig?.topicPrompt || (topicKeywords.length > 0 ? `keywords: ${topicKeywords.slice(0, 3).join(', ')}` : 'general discussion');
     offTopicItems.push({
       transcriptId,
       flaggedWord: 'off_topic',
-      context: segment.text.substring(0, 150),
+      context: `Off-topic content: Discussion about "${segment.text.substring(0, 80)}" is not related to the assigned topic (${topicContext}).`,
       timestampMs: Math.floor(startTimeMs),
       speaker: segment.speaker,
       flagType: 'off_topic',

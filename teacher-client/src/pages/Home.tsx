@@ -182,7 +182,6 @@ export default function Home() {
               currentTime={currentTime}
               onSegmentClick={handleSegmentClick}
               languages={languages}
-              transcriptId={transcriptionId || undefined}
             />
           </div>
             </div>

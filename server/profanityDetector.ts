@@ -38,12 +38,12 @@ export function detectProfanity(
         // Get context (surrounding words)
         const contextStart = Math.max(0, index - 3);
         const contextEnd = Math.min(words.length, index + 4);
-        const context = words.slice(contextStart, contextEnd).join(" ");
+        const contextWords = words.slice(contextStart, contextEnd).join(" ");
 
         flaggedItems.push({
           transcriptId,
           flaggedWord: word,
-          context,
+          context: `Contains profanity: "${word}" is an inappropriate term. Context: "${contextWords}"`,
           timestampMs: wordTimestampMs,
           speaker: segment.speaker,
           flagType: 'profanity',

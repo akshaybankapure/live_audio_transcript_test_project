@@ -821,6 +821,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get flagged content for a specific transcript
+  app.get("/api/transcripts/:id/flagged", isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.user.claims.sub;
+      const cacheKey = buildUserScopedKey(userId, `/api/transcripts/${id}/flagged`);
+
+      const cached = serverCache.get<any>(cacheKey);
+      if (cached) {
+        setPrivateCacheHeaders(res, 5, 10); // Shorter cache for real-time updates
+        return res.json(cached);
+      }
+
+      const transcript = await storage.getTranscript(id);
+      if (!transcript) {
+        return res.status(404).json({ error: "Transcript not found" });
+      }
+
+      // Verify user owns this transcript
+      if (transcript.userId !== userId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const flaggedContent = await storage.getTranscriptFlaggedContent(id);
+      setPrivateCacheHeaders(res, 5, 10); // Shorter cache for real-time updates
+      serverCache.set(cacheKey, flaggedContent, 5_000); // 5 second cache
+      return res.json(flaggedContent);
+    } catch (error) {
+      console.error("Error fetching transcript:", error);
+      res.status(500).json({ error: "Failed to fetch transcript" });
+    }
+  });
+
   app.post("/api/upload-audio", isAuthenticated, upload.single("audio"), async (req: any, res) => {
     try {
       if (!req.file) {
@@ -1031,6 +1064,172 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Transcription fetch error:", error);
       res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Test endpoint: Trigger flags with test words (for testing real-time flagging)
+  app.post("/api/transcripts/:id/test-flag", isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { text, speaker = "SPEAKER 1", flagType = "profanity" } = req.body;
+      const userId = req.user.claims.sub;
+
+      if (!text) {
+        return res.status(400).json({ error: "text is required" });
+      }
+
+      // Verify user owns this transcript
+      const transcript = await storage.getTranscript(id);
+      if (!transcript) {
+        return res.status(404).json({ error: "Transcript not found" });
+      }
+      if (transcript.userId !== userId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Get the last segment's end time or use current time
+      const segments = transcript.segments as any[];
+      const lastSegment = segments.length > 0 ? segments[segments.length - 1] : null;
+      const baseTime = lastSegment ? lastSegment.endTime : 0;
+      const timestampMs = Math.floor((baseTime + 1) * 1000); // Add 1 second after last segment
+
+      // Create a test segment for analysis
+      const testSegment = {
+        speaker,
+        text,
+        startTime: baseTime + 1,
+        endTime: baseTime + 2,
+        language: transcript.language || 'en',
+      };
+
+      // Get topic config and allowed language
+      const allowedLanguage = transcript.language || 'en';
+      const topicConfig = transcript.topicPrompt || transcript.topicKeywords
+        ? {
+            topicPrompt: transcript.topicPrompt,
+            topicKeywords: transcript.topicKeywords as string[] || [],
+          }
+        : undefined;
+
+      // Analyze the test segment
+      const analysis = analyzeSegment(
+        testSegment,
+        id,
+        allowedLanguage,
+        segments,
+        topicConfig,
+        transcript.participationConfig as any
+      );
+
+      // Prepare proposed flags based on flagType
+      let proposed = {
+        profanity: [] as any[],
+        languagePolicy: [] as any[],
+        offTopic: [] as any[],
+      };
+
+      if (flagType === "profanity") {
+        // Manually create a profanity flag for the test text
+        proposed.profanity = [{
+          transcriptId: id,
+          flaggedWord: text.split(/\s+/)[0] || text,
+          context: `Contains profanity: "${text}" is an inappropriate term (TEST FLAG).`,
+          timestampMs,
+          speaker,
+          flagType: 'profanity',
+        }];
+      } else if (flagType === "language_policy") {
+        proposed.languagePolicy = [{
+          transcriptId: id,
+          flaggedWord: 'es', // Test with Spanish
+          context: `Language policy violation: Detected es instead of required ${allowedLanguage}. Content: "${text}" (TEST FLAG)`,
+          timestampMs,
+          speaker,
+          flagType: 'language_policy',
+        }];
+      } else if (flagType === "off_topic") {
+        proposed.offTopic = [{
+          transcriptId: id,
+          flaggedWord: 'off_topic',
+          context: `Off-topic content: Discussion about "${text}" is not related to the assigned topic (TEST FLAG).`,
+          timestampMs,
+          speaker,
+          flagType: 'off_topic',
+        }];
+      }
+
+      // Optional LLM review (guarded by env)
+      const reviewed = await reviewFlagsWithGroq(id, testSegment, proposed, {
+        topicPrompt: topicConfig?.topicPrompt,
+        topicKeywords: topicConfig?.topicKeywords,
+        allowedLanguage,
+      });
+
+      const deviceUser = await storage.getUser(userId);
+      const collatedNewFlagged: any[] = [];
+
+      // Handle profanity flags
+      for (const flagged of reviewed.profanity) {
+        await storage.createFlaggedContent(flagged);
+        collatedNewFlagged.push(flagged);
+        
+        websocketService.broadcastAlert({
+          type: 'PROFANITY_ALERT',
+          deviceId: userId,
+          deviceName: deviceUser?.displayName || 'Unknown Group',
+          transcriptId: id,
+          flaggedWord: flagged.flaggedWord,
+          timestampMs: flagged.timestampMs,
+          speaker: flagged.speaker || 'Unknown',
+          context: flagged.context || '',
+          flagType: 'profanity',
+        });
+      }
+
+      // Handle language policy violations
+      for (const violation of reviewed.languagePolicy) {
+        await storage.createFlaggedContent(violation);
+        collatedNewFlagged.push(violation);
+        
+        websocketService.broadcastAlert({
+          type: 'LANGUAGE_POLICY_ALERT',
+          deviceId: userId,
+          deviceName: deviceUser?.displayName || 'Unknown Group',
+          transcriptId: id,
+          flaggedWord: violation.flaggedWord,
+          timestampMs: violation.timestampMs,
+          speaker: violation.speaker || 'Unknown',
+          context: violation.context || '',
+          flagType: 'language_policy',
+        });
+      }
+
+      // Handle off-topic flags
+      for (const offTopic of reviewed.offTopic) {
+        await storage.createFlaggedContent(offTopic);
+        collatedNewFlagged.push(offTopic);
+        
+        websocketService.broadcastAlert({
+          type: 'TOPIC_ADHERENCE_ALERT',
+          deviceId: userId,
+          deviceName: deviceUser?.displayName || 'Unknown Group',
+          transcriptId: id,
+          flaggedWord: offTopic.flaggedWord,
+          timestampMs: offTopic.timestampMs,
+          speaker: offTopic.speaker || 'Unknown',
+          context: offTopic.context || '',
+          flagType: 'off_topic',
+        });
+      }
+
+      res.json({
+        success: true,
+        message: `Test flag created for ${flagType}`,
+        flaggedItems: collatedNewFlagged,
+      });
+    } catch (error) {
+      console.error("Error creating test flag:", error);
+      res.status(500).json({ error: "Failed to create test flag" });
     }
   });
 

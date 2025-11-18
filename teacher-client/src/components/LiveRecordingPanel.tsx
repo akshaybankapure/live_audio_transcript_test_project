@@ -13,20 +13,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Mic, MicOff, Loader2, Settings, TestTube } from "lucide-react";
+import { Mic, MicOff, Loader2, Settings } from "lucide-react";
 import { SonioxClient } from "@soniox/speech-to-text-web";
-import type { TranscriptSegment as TranscriptSegmentType, FlaggedContent } from "@shared/schema";
+import type { TranscriptSegment as TranscriptSegmentType } from "@shared/schema";
 import TranscriptSegment from "./TranscriptSegment";
 import { useToast } from "@/hooks/use-toast";
 import { getSpeakerColor } from "@/lib/transcripts";
-import { useQuery } from "@tanstack/react-query";
 
 interface LiveRecordingPanelProps {
   selectedLanguage: string;
@@ -54,97 +46,17 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   const [topicKeywords, setTopicKeywords] = useState("");
   const [dominanceThreshold, setDominanceThreshold] = useState(50);
   const [silenceThreshold, setSilenceThreshold] = useState(5);
-  const [showTestDialog, setShowTestDialog] = useState(false);
-  const [testText, setTestText] = useState("");
-  const [testFlagType, setTestFlagType] = useState("profanity");
-  const [testSpeaker, setTestSpeaker] = useState("SPEAKER 1");
   const sonioxClientRef = useRef<SonioxClient | null>(null);
   const tokenMapRef = useRef<Map<string, Token>>(new Map());
   const segmentsRef = useRef<TranscriptSegmentType[]>([]); // Store current segments for callbacks
   const cleanupTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Store cleanup timeout ID
   const transcriptIdRef = useRef<string | null>(null); // Store draft transcript ID
-  const [transcriptId, setTranscriptId] = useState<string | null>(null); // State for React Query
   const lastSentIdxRef = useRef<number>(0); // Track which segments have been sent
   const savePromiseRef = useRef<Promise<void> | null>(null); // Track in-flight save operations
   const lastAppendTimeRef = useRef<number>(0); // Track last append time for batching
   const pendingStartRef = useRef<(() => void) | null>(null); // Store pending start function
   const { toast} = useToast();
   const endRef = useRef<HTMLDivElement | null>(null);
-
-  // Fetch flagged content for the current transcript
-  const { data: flaggedContent = [] } = useQuery<FlaggedContent[]>({
-    queryKey: ["/api/transcripts", transcriptId, "flagged"],
-    enabled: !!transcriptId,
-    refetchInterval: transcriptId ? 2000 : false, // Poll every 2 seconds for live updates
-  });
-
-  // Create a map of timestampMs to flags for quick lookup
-  const flagsByTimestamp = new Map<number, FlaggedContent[]>();
-  if (flaggedContent) {
-    flaggedContent.forEach((flag) => {
-      const timeKey = Math.floor(flag.timestampMs / 1000); // Round to seconds
-      if (!flagsByTimestamp.has(timeKey)) {
-        flagsByTimestamp.set(timeKey, []);
-      }
-      flagsByTimestamp.get(timeKey)!.push(flag);
-    });
-  }
-
-  // Helper function to get flags for a segment
-  const getFlagsForSegment = (segment: TranscriptSegmentType): FlaggedContent[] => {
-    const segmentStartTime = Math.floor(segment.startTime);
-    const segmentEndTime = Math.floor(segment.endTime);
-    const flags: FlaggedContent[] = [];
-    
-    for (let time = segmentStartTime; time <= segmentEndTime; time++) {
-      const timeFlags = flagsByTimestamp.get(time) || [];
-      flags.push(...timeFlags);
-    }
-    
-    return flags;
-  };
-
-  // Test flag function
-  const handleTestFlag = async () => {
-    if (!transcriptId || !testText.trim()) {
-      toast({
-        title: "Error",
-        description: "Please enter test text",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/transcripts/${transcriptId}/test-flag`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: testText,
-          speaker: testSpeaker,
-          flagType: testFlagType,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to create test flag");
-      }
-
-      toast({
-        title: "Test flag created",
-        description: `Flagged "${testText}" as ${testFlagType}`,
-      });
-
-      setShowTestDialog(false);
-      setTestText("");
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to create test flag",
-        variant: "destructive",
-      });
-    }
-  };
 
   useEffect(() => {
     // Cleanup on unmount
@@ -505,7 +417,6 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
           const draftId = await createDraftTranscript();
           if (draftId) {
             transcriptIdRef.current = draftId;
-            setTranscriptId(draftId);
             console.log("Draft transcript created:", draftId);
           } else {
             toast({
@@ -542,7 +453,6 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
               segmentsRef.current = [];
               tokenMapRef.current.clear();
               transcriptIdRef.current = null;
-              setTranscriptId(null);
               lastSentIdxRef.current = 0;
               setProfanityCount(0);
               setSaveStatus('idle');
@@ -692,39 +602,16 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {transcriptId && (
-            <Button
-              onClick={() => setShowTestDialog(true)}
-              variant="outline"
-              size="sm"
-              className="gap-2"
-              data-testid="button-test-flag"
-            >
-              <TestTube className="h-4 w-4" />
-              Test Flag
-            </Button>
-          )}
+        {segments.length > 0 && !isRecording && (
           <Button
-            onClick={() => setShowConfigDialog(true)}
+            onClick={clearTranscript}
             variant="outline"
             size="sm"
-            className="gap-2"
+            data-testid="button-clear-transcript"
           >
-            <Settings className="h-4 w-4" />
-            Settings
+            Clear Transcript
           </Button>
-          {segments.length > 0 && !isRecording && (
-            <Button
-              onClick={clearTranscript}
-              variant="outline"
-              size="sm"
-              data-testid="button-clear-transcript"
-            >
-              Clear Transcript
-            </Button>
-          )}
-        </div>
+        )}
       </div>
 
       {isRecording && (
@@ -769,19 +656,15 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
         </div>
         <ScrollArea className="flex-1">
           <div className="p-3 space-y-3">
-            {segments.map((segment, index) => {
-              const segmentFlags = getFlagsForSegment(segment);
-              return (
-                <TranscriptSegment
-                  key={index}
-                  segment={segment}
-                  isActive={false}
-                  onClick={() => {}}
-                  speakerColor={getSpeakerColor(segment.speaker)}
-                  flags={segmentFlags}
-                />
-              );
-            })}
+            {segments.map((segment, index) => (
+              <TranscriptSegment
+                key={index}
+                segment={segment}
+                isActive={false}
+                onClick={() => {}}
+                speakerColor={getSpeakerColor(segment.speaker)}
+              />
+            ))}
             {renderNonFinalTokens()}
             <div ref={endRef} />
           </div>
@@ -796,62 +679,6 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
           </p>
         </Card>
       )}
-
-      {/* Test Flag Dialog */}
-      <Dialog open={showTestDialog} onOpenChange={setShowTestDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <TestTube className="h-5 w-5" />
-              Test Real-Time Flagging
-            </DialogTitle>
-            <DialogDescription>
-              Enter test text to trigger a flag and see how real-time flagging works.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="test-text">Test Text</Label>
-              <Input
-                id="test-text"
-                placeholder="Enter text to flag (e.g., 'damn', 'off-topic discussion')"
-                value={testText}
-                onChange={(e) => setTestText(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="test-flag-type">Flag Type</Label>
-              <Select value={testFlagType} onValueChange={setTestFlagType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="profanity">Profanity</SelectItem>
-                  <SelectItem value="language_policy">Language Policy</SelectItem>
-                  <SelectItem value="off_topic">Off-Topic</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="test-speaker">Speaker</Label>
-              <Input
-                id="test-speaker"
-                placeholder="SPEAKER 1"
-                value={testSpeaker}
-                onChange={(e) => setTestSpeaker(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTestDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleTestFlag} disabled={!testText.trim()}>
-              Create Test Flag
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Configuration Dialog */}
       <Dialog open={showConfigDialog} onOpenChange={setShowConfigDialog}>
