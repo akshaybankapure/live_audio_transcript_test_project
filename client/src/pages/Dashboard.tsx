@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -22,7 +23,9 @@ import {
   Clock,
   Activity,
   Calendar,
-  Filter
+  Filter,
+  Eye,
+  Target
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getQueryFn } from "@/lib/queryClient";
@@ -105,8 +108,9 @@ export default function Dashboard() {
   const { data, isLoading, isFetching } = useQuery<DashboardOverviewResponse>({
     queryKey: [`/api/dashboard/overview?${queryParams.toString()}`],
     placeholderData: (previousData) => previousData,
-    refetchOnMount: false, // Use cached data if available - don't refetch on every mount
-    staleTime: 30 * 60 * 1000, // 30 minutes - data stays fresh
+    refetchOnMount: true, // Refetch on mount to get latest data
+    staleTime: 10 * 1000, // 10 seconds - data stays fresh for short time
+    refetchInterval: 30 * 1000, // Refetch every 30 seconds for live updates
     // Only fetch once we know the auth state; prevents initial 401 error path
     enabled: user !== undefined && user !== null,
   });
@@ -514,173 +518,188 @@ export default function Dashboard() {
             ))}
           </div>
         ) : data && data.devices.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {data.devices.map((device) => {
               const isCurrentUser = device.userId === data.currentUserId;
                       const isActive = device.sessionCount > 0;
                       const hasFlags = device.flagCount > 0;
+                      
+                      // Get recent alerts for this device
+                      const deviceAlerts = alerts.filter(a => a.deviceId === device.userId).slice(0, 2);
+                      
+                      // Determine if critical (profanity, high language flags, or low topic adherence)
+                      const isCritical = (device.flagBreakdown?.profanity || 0) > 0 || 
+                                        (device.flagBreakdown?.languagePolicy || 0) > 2 || 
+                                        (device.avgTopicAdherence !== null && device.avgTopicAdherence < 0.7);
+                      
+                      // Calculate time since last activity
+                      const timeSinceActivity = device.lastActivity 
+                        ? Date.now() - new Date(device.lastActivity).getTime()
+                        : Infinity;
+                      const activityText = timeSinceActivity < 60000 
+                        ? 'Just now' 
+                        : timeSinceActivity < 3600000 
+                        ? `${Math.floor(timeSinceActivity / 60000)}m ago`
+                        : formatDate(device.lastActivity);
               
               return (
                 <Card
                   key={device.userId}
-                          className={`p-4 cursor-pointer transition-all hover:shadow-md hover:border-primary/50 ${
-                            isCurrentUser ? 'border-primary ring-2 ring-primary/20 bg-primary/5' : ''
-                          } ${hasFlags ? 'border-destructive/30' : ''}`}
+                          className={`p-5 cursor-pointer transition-all hover:shadow-lg ${
+                            isCritical ? 'border-red-300 border-2' : ''
+                          }`}
                   onClick={() => setLocation(`/dashboard/device/${device.userId}`)}
                   data-testid={`card-device-${device.userId}`}
                 >
-                          {/* Header */}
-                          <div className="flex items-start justify-between mb-3">
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
-                              {isActive && (
-                                <div className="h-2 w-2 rounded-full bg-green-500 flex-shrink-0 mt-1 animate-pulse" />
-                              )}
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <p className="text-sm font-semibold truncate" data-testid={`text-device-name-${device.userId}`}>
-                        {device.displayName || 'Unknown Device'}
-                                  </p>
-                      {isCurrentUser && (
-                                    <Badge variant="default" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0" data-testid="badge-current-user">
-                          You
-                        </Badge>
-                      )}
-                    </div>
-                                <p className="text-[10px] text-muted-foreground truncate" data-testid={`text-device-activity-${device.userId}`}>
-                                  {isActive ? `Last active: ${formatDate(device.lastActivity)}` : 'Never active'}
+                          {/* Group Header - Matching Figma */}
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className={`size-10 rounded-full flex items-center justify-center ${
+                                isActive ? 'bg-green-100' : 'bg-gray-100'
+                              }`}>
+                                <Users className={`size-5 ${
+                                  isActive ? 'text-green-600' : 'text-gray-400'
+                                }`} />
+                              </div>
+                              <div>
+                                <h3 className="text-base font-semibold" data-testid={`text-device-name-${device.userId}`}>
+                                  {device.displayName || 'Unknown Device'}
+                                </h3>
+                                <p className="text-xs text-muted-foreground">
+                                  {device.sessionCount > 0 ? `${device.sessionCount} ${device.sessionCount === 1 ? 'session' : 'sessions'}` : 'No sessions'}
                                 </p>
                               </div>
                             </div>
-                            {hasFlags && (
-                              <div className="flex items-center gap-1 flex-shrink-0">
-                                <AlertTriangle className="h-4 w-4 text-destructive" />
-                                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5">
-                                  {device.flagCount}
-                                </Badge>
+                            <div className="text-right">
+                              <Badge variant={isActive ? "default" : "outline"} className="mb-1">
+                                {isActive ? 'Live' : 'Paused'}
+                              </Badge>
+                              <div className="text-xs text-muted-foreground" data-testid={`text-device-activity-${device.userId}`}>
+                                {device.lastActivity ? activityText : 'Never active'}
                               </div>
-                            )}
-                          </div>
-
-                          {/* Stats Grid */}
-                          <div className="grid grid-cols-2 gap-3 pt-3 border-t">
-                      <div className="space-y-1">
-                              <div className="flex items-center gap-1.5">
-                                <FileText className="h-3 w-3 text-muted-foreground" />
-                                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Sessions</p>
-                              </div>
-                              <p className="text-xl font-bold" data-testid={`text-session-count-${device.userId}`}>
-                          {device.sessionCount}
-                        </p>
-                              <p className="text-[10px] text-muted-foreground">
-                                {device.sessionCount === 0 ? 'No recordings' : 'Total recordings'}
-                              </p>
-                      </div>
-                            
-                      <div className="space-y-1">
-                              <div className="flex items-center gap-1.5">
-                                <Flag className={`h-3 w-3 ${hasFlags ? 'text-destructive' : 'text-muted-foreground'}`} />
-                                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total Flags</p>
-                              </div>
-                              <p className={`text-xl font-bold ${hasFlags ? 'text-destructive' : ''}`} data-testid={`text-flag-count-${device.userId}`}>
-                            {device.flagCount}
-                          </p>
-                              <p className="text-[10px] text-muted-foreground">
-                                {hasFlags ? 'Issues detected' : 'No issues'}
-                              </p>
                             </div>
                           </div>
 
-                          {/* Topic Adherence */}
-                          {device.avgTopicAdherence !== null && device.sessionCount > 0 && (
-                            <div className="mt-3 pt-3 border-t">
-                              <div className="flex items-center justify-between mb-1.5">
-                                <div className="flex items-center gap-1.5">
-                                  <MessageSquareX className="h-3 w-3 text-muted-foreground" />
-                                  <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Topic Adherence</p>
-                                </div>
-                                <Badge 
-                                  variant={device.avgTopicAdherence >= 0.7 ? 'default' : device.avgTopicAdherence >= 0.5 ? 'secondary' : 'destructive'}
-                                  className="text-[10px] px-1.5 py-0 h-4"
-                                >
-                                  {Math.round(device.avgTopicAdherence * 100)}%
-                                </Badge>
+                          {/* Critical Alerts - "Needs Attention" Box */}
+                          {isCritical && (
+                            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                              <div className="flex items-center gap-2 text-red-700 mb-2">
+                                <AlertTriangle className="size-4" />
+                                <span className="text-sm font-semibold">Needs Attention</span>
                               </div>
-                              <div className="w-full bg-muted rounded-full h-1.5">
-                                <div 
-                                  className={`h-1.5 rounded-full transition-all ${
-                                    device.avgTopicAdherence >= 0.7 
-                                      ? 'bg-green-600' 
-                                      : device.avgTopicAdherence >= 0.5 
-                                      ? 'bg-yellow-600' 
-                                      : 'bg-red-600'
-                                  }`}
-                                  style={{ width: `${device.avgTopicAdherence * 100}%` }}
+                              {deviceAlerts.length > 0 ? (
+                                deviceAlerts.map((alert, idx) => (
+                                  <div key={idx} className="text-xs text-red-600 mb-1">
+                                    • {alert.type === 'PROFANITY_ALERT' 
+                                      ? `Inappropriate language from ${alert.speaker}`
+                                      : alert.type === 'LANGUAGE_POLICY_ALERT'
+                                      ? `${alert.flaggedWord} detected from ${alert.speaker}`
+                                      : alert.context || alert.flaggedWord}
+                                  </div>
+                                ))
+                              ) : (
+                                <>
+                                  {(device.flagBreakdown?.profanity || 0) > 0 && (
+                                    <div className="text-xs text-red-600 mb-1">
+                                      • Inappropriate language detected
+                                    </div>
+                                  )}
+                                  {(device.flagBreakdown?.languagePolicy || 0) > 0 && (
+                                    <div className="text-xs text-red-600 mb-1">
+                                      • Non-English language detected
+                                    </div>
+                                  )}
+                                  {device.avgTopicAdherence !== null && device.avgTopicAdherence < 0.7 && (
+                                    <div className="text-xs text-red-600 mb-1">
+                                      • Discussion drifting off-topic
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Metrics */}
+                          <div className="space-y-3 mb-4">
+                            {/* Topic Adherence */}
+                            {device.avgTopicAdherence !== null && device.sessionCount > 0 && (
+                              <div>
+                                <div className="flex items-center justify-between text-xs mb-1">
+                                  <div className="flex items-center gap-1">
+                                    <Target className="size-3" />
+                                    <span>Topic Adherence</span>
+                                  </div>
+                                  <span className={
+                                    device.avgTopicAdherence > 0.8 ? 'text-green-600' :
+                                    device.avgTopicAdherence > 0.7 ? 'text-orange-600' :
+                                    'text-red-600'
+                                  }>
+                                    {Math.round(device.avgTopicAdherence * 100)}%
+                                  </span>
+                                </div>
+                                <Progress 
+                                  value={device.avgTopicAdherence * 100} 
+                                  className="h-2"
                                 />
                               </div>
+                            )}
+
+                            {/* Participation */}
+                            <div className="flex items-center justify-between text-xs">
+                              <div className="flex items-center gap-1">
+                                <Users className="size-3" />
+                                <span>Participation</span>
+                              </div>
+                              <Badge 
+                                variant={device.flagBreakdown?.participation === 0 ? "default" : "destructive"}
+                                className="text-xs"
+                              >
+                                {device.flagBreakdown?.participation === 0 ? 'Balanced' : 'Imbalanced'}
+                              </Badge>
                             </div>
-                          )}
 
-                          {/* Flag Breakdown */}
-                          {hasFlags && device.flagBreakdown && (
-                            <div className="mt-3 pt-3 border-t">
-                              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2">Flag Breakdown</p>
-                              <div className="grid grid-cols-2 gap-2">
-                                {(device.flagBreakdown.profanity || 0) > 0 && (
-                                  <div className="flex items-center gap-1.5">
-                                    <AlertTriangle className="h-3 w-3 text-destructive" />
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-[10px] font-medium text-destructive truncate">Profanity</p>
-                                      <p className="text-xs font-bold text-destructive">{device.flagBreakdown.profanity}</p>
-                                    </div>
-                                  </div>
-                                )}
-                                {(device.flagBreakdown.languagePolicy || 0) > 0 && (
-                                  <div className="flex items-center gap-1.5">
-                                    <Languages className="h-3 w-3 text-orange-600" />
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-[10px] font-medium text-orange-600 truncate">Language</p>
-                                      <p className="text-xs font-bold text-orange-600">{device.flagBreakdown.languagePolicy}</p>
-                                    </div>
-                                  </div>
-                                )}
-                                {(device.flagBreakdown.offTopic || 0) > 0 && (
-                                  <div className="flex items-center gap-1.5">
-                                    <MessageSquareX className="h-3 w-3 text-yellow-600" />
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-[10px] font-medium text-yellow-600 truncate">Off-Topic</p>
-                                      <p className="text-xs font-bold text-yellow-600">{device.flagBreakdown.offTopic}</p>
-                                    </div>
-                                  </div>
-                                )}
-                                {(device.flagBreakdown.participation || 0) > 0 && (
-                                  <div className="flex items-center gap-1.5">
-                                    <UserX className="h-3 w-3 text-blue-600" />
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-[10px] font-medium text-blue-600 truncate">Participation</p>
-                                      <p className="text-xs font-bold text-blue-600">{device.flagBreakdown.participation}</p>
-                        </div>
-                                  </div>
-                                )}
-                      </div>
-                    </div>
-                          )}
-
-                          {/* Status Footer */}
-                          <div className="mt-3 pt-2 border-t">
-                            {isActive ? (
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-1.5">
-                                  <CheckCircle2 className="h-3 w-3 text-green-600" />
-                                  <p className="text-[10px] text-green-600 font-medium">Active</p>
-                                </div>
-                                <p className="text-[10px] text-muted-foreground">View details →</p>
-                      </div>
-                    ) : (
-                              <div className="text-center">
-                                <p className="text-[10px] text-muted-foreground">No activity yet</p>
-                      </div>
-                    )}
+                            {/* Flag Breakdown - 2x2 Grid with Colored Backgrounds */}
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="flex items-center justify-between p-2 bg-red-50 rounded">
+                                <span>Profanity</span>
+                                <Badge variant={device.flagBreakdown?.profanity ? "destructive" : "outline"} className="text-xs">
+                                  {device.flagBreakdown?.profanity || 0}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between p-2 bg-orange-50 rounded">
+                                <span>Language</span>
+                                <Badge variant={device.flagBreakdown?.languagePolicy ? "destructive" : "outline"} className="text-xs">
+                                  {device.flagBreakdown?.languagePolicy || 0}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
+                                <span>Participation</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {device.flagBreakdown?.participation || 0}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center justify-between p-2 bg-blue-50 rounded">
+                                <span>Off-topic</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {device.flagBreakdown?.offTopic || 0}
+                                </Badge>
+                              </div>
+                            </div>
                           </div>
+
+                          {/* View Details Button */}
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            className="w-full"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLocation(`/dashboard/device/${device.userId}`);
+                            }}
+                          >
+                            <Eye className="size-4 mr-2" />
+                            View Details
+                          </Button>
                 </Card>
               );
             })}

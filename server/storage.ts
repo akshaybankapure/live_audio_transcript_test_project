@@ -228,36 +228,69 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(transcripts.createdAt));
   }
 
-  async appendSegments(transcriptId: string, newSegments: any[], fromIndex: number): Promise<Transcript> {
-    // Atomic append using SQL that derives from current JSONB state
-    // Cast to handle null values and ensure type compatibility
-    const newSegmentsJson = JSON.stringify(newSegments);
+  async appendSegments(transcriptId: string, newSegments: any[], fromIndex: number, updateLastIfSameSpeaker: boolean = true): Promise<Transcript> {
+    // Get current transcript to check last segment
+    const current = await db
+      .select()
+      .from(transcripts)
+      .where(eq(transcripts.id, transcriptId))
+      .limit(1);
+    
+    if (current.length === 0) {
+      throw new Error(`Transcript ${transcriptId} not found`);
+    }
+
+    const currentTranscript = current[0];
+    const existingSegments = (currentTranscript.segments as any[]) || [];
+    const currentLastIdx = currentTranscript.lastSegmentIdx || 0;
+
+    // Validate index
+    if (currentLastIdx !== fromIndex) {
+      throw new Error(`Index mismatch: expected ${fromIndex}, got ${currentLastIdx}`);
+    }
+
+    // Check if we should update the last segment instead of appending
+    let segmentsToAppend = newSegments;
+    let segmentsToUpdate = existingSegments;
+    
+    if (updateLastIfSameSpeaker && existingSegments.length > 0 && newSegments.length > 0) {
+      const lastExistingSegment = existingSegments[existingSegments.length - 1];
+      const firstNewSegment = newSegments[0];
+      
+      // If same speaker, update last segment and append the rest
+      if (lastExistingSegment.speaker === firstNewSegment.speaker) {
+        // Update the last segment with the new text (which should be longer/more complete)
+        segmentsToUpdate = [...existingSegments];
+        segmentsToUpdate[segmentsToUpdate.length - 1] = {
+          ...lastExistingSegment,
+          text: firstNewSegment.text, // Use the new, more complete text
+          endTime: firstNewSegment.endTime, // Update end time
+        };
+        
+        // Append remaining segments (skip the first one since we updated the last)
+        segmentsToAppend = newSegments.slice(1);
+      }
+    }
+
+    // If we're updating the last segment, replace it; otherwise append
+    const finalSegments = segmentsToAppend.length > 0
+      ? [...segmentsToUpdate, ...segmentsToAppend]
+      : segmentsToUpdate;
+    
+    const finalSegmentsJson = JSON.stringify(finalSegments);
     
     const [updated] = await db
       .update(transcripts)
       .set({
-        // Atomically concatenate: COALESCE handles null, ${transcripts.segments} references column
-        segments: sql`COALESCE(${transcripts.segments}, '[]'::jsonb) || ${newSegmentsJson}::jsonb`,
-        // Atomically calculate new index from concatenated result
-        lastSegmentIdx: sql`jsonb_array_length(COALESCE(${transcripts.segments}, '[]'::jsonb) || ${newSegmentsJson}::jsonb)`,
+        segments: sql`${finalSegmentsJson}::jsonb`,
+        lastSegmentIdx: finalSegments.length,
         updatedAt: new Date(),
       })
-      .where(
-        sql`${transcripts.id} = ${transcriptId} AND ${transcripts.lastSegmentIdx} = ${fromIndex}`
-      )
+      .where(eq(transcripts.id, transcriptId))
       .returning();
 
-    // If no rows updated, index mismatch occurred
     if (!updated) {
-      // Fetch current state to provide helpful error message
-      const freshTranscript = await db
-        .select()
-        .from(transcripts)
-        .where(eq(transcripts.id, transcriptId))
-        .limit(1);
-      
-      const current = freshTranscript[0];
-      throw new Error(`Index mismatch: expected ${fromIndex}, got ${current?.lastSegmentIdx ?? 'unknown'}`);
+      throw new Error(`Failed to update transcript ${transcriptId}`);
     }
 
     return updated;
@@ -525,7 +558,7 @@ export class DatabaseStorage implements IStorage {
           user_id,
           COUNT(*)::int as session_count,
           AVG(topic_adherence_score) as avg_topic_adherence,
-          MAX(created_at) as last_activity
+          GREATEST(MAX(created_at), MAX(updated_at)) as last_activity
         FROM ${transcripts} t
         WHERE (status = 'complete' OR status = 'draft') AND ${dateFilter} AND ${transcriptFilter}
         GROUP BY user_id
