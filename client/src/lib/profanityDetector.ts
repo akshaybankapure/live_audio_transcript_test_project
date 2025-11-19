@@ -5,7 +5,7 @@
 
 /** CONFIG: profanity dictionary (expand as needed) */
 const PROFANITY = new Set([
-  "fuck", "fucks", "fucked", "fucking", "motherfucker", "mf",
+  "fuck", "fucks", "fucked", "fucking", "motherfucker", "mf", "hell", "hells", "what the fuck", "what the hell", "what the shit", "what the ass", "what the dick", "what the cock", "what the pussy", "what the shit", "what the ass", "what the dick", "what the cock", "what the pussy",
   "shit", "shitty", "bullshit", "wtf", "tf", "stfu", "gtfo",
   "ass", "asshole", "dumbass", "jackass",
   "bitch", "bitches", "bastard",
@@ -15,9 +15,20 @@ const PROFANITY = new Set([
   "crap", "damn", "dammit",
   "suck my dick", "go to hell", "screw you",
   "fuk", "f*ck", "f**k", "fu", "f u", "fukn", "fkn", "fkin", "fking",
-  "sht", "sh*t", "sh**", "af",
+  "sht", "sh*t", "sh**", "af", "pussy", 
+  //add few hindi ones here
+  
   // Test words for demonstration
-  "good morning", "goodmorning"
+  "good afternoon", "goodafternoon", "afternoon",
+  "good morning", "goodmorning", "morning",
+  "good evening", "goodevening", "evening",
+  "good night", "goodnight", "night",
+  "goodbye", "bye",
+  "hello", "hi",
+  "thanks", "thank you",
+  "please", "plz",
+  "sorry", "sry",
+  "private"
 ]);
 
 /** whitelist avoids classic false-positives */
@@ -109,13 +120,13 @@ function scoreCandidate(text: string): { score: number; match: string | null } {
   norm = collapseRepeats(norm);
   const letters = stripPunct(leetUnmask(norm));
 
-  for (const w of WHITELIST) {
+  for (const w of Array.from(WHITELIST)) {
     if (norm.includes(w)) return { score: 0, match: null };
   }
 
   let best = { score: 0, match: null as string | null };
 
-  for (const prof of PROFANITY) {
+  for (const prof of Array.from(PROFANITY)) {
     const profNorm = normalize(prof);
     if (profNorm.includes(" ")) {
       if (norm.includes(profNorm)) return { score: 1.0, match: prof };
@@ -227,6 +238,101 @@ export function highlightProfanity(text: string): Array<{ text: string; isProfan
     });
   }
   
+  return parts;
+}
+
+/**
+ * Detect non-English words in text (for language policy highlighting)
+ * Uses Unicode ranges to identify different scripts
+ */
+function isNonEnglishWord(word: string, allowedLanguage: string = 'en'): boolean {
+  if (allowedLanguage.toLowerCase() !== 'en') {
+    // If allowed language is not English, we'd need to check against that language
+    // For now, we'll focus on English-only detection
+    return false;
+  }
+
+  // Remove punctuation and whitespace
+  const cleanWord = word.trim().replace(/[^\w]/g, '');
+  if (cleanWord.length === 0) return false;
+
+  // Check if word contains non-ASCII characters (likely non-English)
+  // This includes: Devanagari (Hindi), Arabic, Chinese, Japanese, Korean, etc.
+  const nonEnglishRegex = /[\u0080-\uFFFF]/;
+  
+  // Also check for common non-English scripts
+  const devanagariRegex = /[\u0900-\u097F]/; // Hindi, Sanskrit, etc.
+  const arabicRegex = /[\u0600-\u06FF]/; // Arabic
+  const chineseRegex = /[\u4E00-\u9FFF]/; // Chinese
+  const japaneseRegex = /[\u3040-\u309F\u30A0-\u30FF]/; // Hiragana, Katakana
+  const koreanRegex = /[\uAC00-\uD7AF]/; // Korean
+  
+  return nonEnglishRegex.test(cleanWord) && 
+         (devanagariRegex.test(cleanWord) || 
+          arabicRegex.test(cleanWord) || 
+          chineseRegex.test(cleanWord) || 
+          japaneseRegex.test(cleanWord) || 
+          koreanRegex.test(cleanWord));
+}
+
+/**
+ * Highlight language policy violations in text
+ * Returns array of text parts with non-allowed language words highlighted
+ */
+export function highlightLanguagePolicyViolations(
+  text: string, 
+  segmentLanguage: string | undefined,
+  allowedLanguage: string = 'en'
+): Array<{ text: string; isLanguageViolation: boolean }> {
+  // If segment language matches allowed language, no highlighting needed
+  if (!segmentLanguage || segmentLanguage.toLowerCase() === allowedLanguage.toLowerCase()) {
+    return [{ text, isLanguageViolation: false }];
+  }
+
+  // For mixed-language segments, highlight non-English portions
+  // Split by Unicode script boundaries to identify language changes
+  const parts: Array<{ text: string; isLanguageViolation: boolean }> = [];
+  let currentPart = '';
+  let currentIsViolation = false;
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const isNonEnglishChar = /[\u0080-\uFFFF]/.test(char) && 
+      (/[\u0900-\u097F]/.test(char) || // Devanagari
+       /[\u0600-\u06FF]/.test(char) || // Arabic
+       /[\u4E00-\u9FFF]/.test(char) || // Chinese
+       /[\u3040-\u309F\u30A0-\u30FF]/.test(char) || // Japanese
+       /[\uAC00-\uD7AF]/.test(char)); // Korean
+    
+    if (isNonEnglishChar !== currentIsViolation && currentPart.length > 0) {
+      // Language boundary detected - save current part and start new one
+      parts.push({
+        text: currentPart,
+        isLanguageViolation: currentIsViolation,
+      });
+      currentPart = char;
+      currentIsViolation = isNonEnglishChar;
+    } else {
+      currentPart += char;
+      if (currentPart.length === 1) {
+        currentIsViolation = isNonEnglishChar;
+      }
+    }
+  }
+  
+  // Add final part
+  if (currentPart.length > 0) {
+    parts.push({
+      text: currentPart,
+      isLanguageViolation: currentIsViolation,
+    });
+  }
+
+  // If no violations found, return original text
+  if (parts.every(p => !p.isLanguageViolation)) {
+    return [{ text, isLanguageViolation: false }];
+  }
+
   return parts;
 }
 

@@ -34,6 +34,7 @@ import type { Transcript, FlaggedContent, User, TranscriptSegment } from "@share
 import TranscriptSegmentComponent from "@/components/TranscriptSegment";
 import { getSpeakerColor } from "@/lib/transcripts";
 import { hasProfanity } from "@/lib/profanityDetector";
+import { getFlagConfig, getFlagBadgeClassName, getFlagIconClassName } from "@/lib/flagConfig";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -655,38 +656,21 @@ export default function DeviceDetails() {
                       {filteredFlags.length > 0 ? (
                         <div className="space-y-1.5">
                           {filteredFlags.map((flag) => {
-                            const flagConfig = {
-                              profanity: { color: 'destructive', icon: AlertTriangle, label: 'Profanity' },
-                              language_policy: { color: 'orange', icon: Languages, label: 'Language' },
-                              off_topic: { color: 'yellow', icon: MessageSquareX, label: 'Off-Topic' },
-                              participation: { color: 'blue', icon: UserX, label: 'Participation' },
-                            }[flag.flagType] || { color: 'gray', icon: Flag, label: 'Flag' };
+                            const flagConfig = getFlagConfig(flag.flagType);
                             const Icon = flagConfig.icon;
                             
                             return (
                               <div
                                 key={flag.id}
-                                className={`p-2.5 border rounded-lg hover:bg-muted/30 transition-colors ${
-                                  flag.flagType === 'profanity' ? 'border-destructive/30 bg-destructive/5' :
-                                  flag.flagType === 'language_policy' ? 'border-orange-500/30 bg-orange-500/5' :
-                                  flag.flagType === 'off_topic' ? 'border-yellow-500/30 bg-yellow-500/5' :
-                                  flag.flagType === 'participation' ? 'border-blue-500/30 bg-blue-500/5' :
-                                  'border-border'
-                                }`}
+                                className={`p-2.5 border rounded-lg hover:bg-muted/30 transition-colors ${flagConfig.borderColor} ${flagConfig.bgColor}`}
                               >
                                 <div className="flex items-start gap-2">
                                   <div className="flex-shrink-0 mt-0.5">
-                                    <Icon className={`h-3.5 w-3.5 ${
-                                      flag.flagType === 'profanity' ? 'text-destructive' :
-                                      flag.flagType === 'language_policy' ? 'text-orange-600' :
-                                      flag.flagType === 'off_topic' ? 'text-yellow-600' :
-                                      flag.flagType === 'participation' ? 'text-blue-600' :
-                                      'text-muted-foreground'
-                                    }`} />
+                                    <Icon className={getFlagIconClassName(flag.flagType)} />
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap mb-1">
-                                      <Badge variant={flag.flagType === 'profanity' ? 'destructive' : 'outline'} className="text-[10px] px-1.5 py-0 h-4">
+                                      <Badge variant={flagConfig.variant} className={getFlagBadgeClassName(flag.flagType) + ' text-[10px] px-1.5 py-0 h-4'}>
                                         {flagConfig.label}
                                       </Badge>
                                       <span className="text-xs font-medium truncate">{flag.flaggedWord}</span>
@@ -1149,14 +1133,19 @@ export default function DeviceDetails() {
                                       <div className="border rounded-md bg-muted/30 overflow-hidden">
                                         <ScrollArea className="h-[400px] sm:h-[500px] md:h-[600px] lg:h-[700px] w-full">
                                           <div className="p-4 space-y-2">
-                                            {segments.map((segment, idx) => (
-                                              <div key={`${session.id}-segment-${idx}`} className="w-full">
-                                                <TranscriptSegmentComponent
-                                                  segment={segment}
-                                                  speakerColor={getSpeakerColor(segment.speaker)}
-                                                />
-                                              </div>
-                                            ))}
+                                            {segments.map((segment, idx) => {
+                                              // Get flags for this session
+                                              const sessionFlags = filteredFlags.filter(f => f.transcriptId === session.id);
+                                              return (
+                                                <div key={`${session.id}-segment-${idx}`} className="w-full">
+                                                  <TranscriptSegmentComponent
+                                                    segment={segment}
+                                                    speakerColor={getSpeakerColor(segment.speaker)}
+                                                    flags={sessionFlags}
+                                                  />
+                                                </div>
+                                              );
+                                            })}
                                           </div>
                                         </ScrollArea>
                                       </div>

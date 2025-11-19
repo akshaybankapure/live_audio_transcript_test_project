@@ -34,7 +34,8 @@ import { SonioxClient } from "@soniox/speech-to-text-web";
 import type { TranscriptSegment as TranscriptSegmentType, FlaggedContent } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
 import { getSpeakerColor } from "@/lib/transcripts";
-import { hasProfanity, highlightProfanity } from "@/lib/profanityDetector";
+import { hasProfanity, highlightProfanity, highlightLanguagePolicyViolations } from "@/lib/profanityDetector";
+import { getFlagConfig, getFlagBadgeClassName } from "@/lib/flagConfig";
 
 interface LiveRecordingPanelProps {
   selectedLanguage: string;
@@ -75,9 +76,8 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const sonioxClientRef = useRef<SonioxClient | null>(null);
-  // Store final tokens in a simple array, using a Set to track which we've seen
-  // Key format: start_ms_end_ms_speaker_text (simple and effective)
-  const finalTokensSetRef = useRef<Set<string>>(new Set());
+  // Store final tokens in a simple array
+  // We handle refined tokens (same time range, better text) by replacing old tokens
   const finalTokensRef = useRef<Token[]>([]);
   const segmentsRef = useRef<TranscriptSegmentType[]>([]);
   const cleanupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -451,7 +451,6 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
       }
 
       // Reset token storage
-      finalTokensSetRef.current.clear();
       finalTokensRef.current = [];
       setSegments([]);
       segmentsRef.current = [];
@@ -470,23 +469,41 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
 
         onPartialResult: (result: any) => {
           if (result.tokens && result.tokens.length > 0) {
-            // Process tokens: add final tokens to our collection, update partial tokens for preview
+            // Process tokens: handle final tokens properly
+            // Standard approach: use time range + speaker as key to handle refined tokens
             result.tokens.forEach((token: Token) => {
               // Only process final tokens for segments (matching server approach)
               if (token.is_final) {
                 const startMs = token.start_ms ?? 0;
                 const endMs = token.end_ms ?? 0;
                 const speaker = token.speaker || "1";
-                const text = token.text || "";
                 
-                // Create a simple unique key to avoid exact duplicates
-                // Use time range + speaker + text to identify unique tokens
-                const tokenKey = `${startMs}_${endMs}_${speaker}_${text}`;
+                // Key is time range + speaker (not text) - this allows refined tokens to replace old ones
+                // Soniox may refine tokens with same time range but better text
+                const tokenKey = `${startMs}_${endMs}_${speaker}`;
                 
-                // Only add if we haven't seen this exact token before
-                // This handles cases where Soniox might send the same final token multiple times
-                if (!finalTokensSetRef.current.has(tokenKey)) {
-                  finalTokensSetRef.current.add(tokenKey);
+                // Check if we already have a token with this time range and speaker
+                const existingIndex = finalTokensRef.current.findIndex(t => 
+                  (t.start_ms ?? 0) === startMs && 
+                  (t.end_ms ?? 0) === endMs && 
+                  (t.speaker || "1") === speaker
+                );
+                
+                if (existingIndex >= 0) {
+                  // Token with same time range exists - this is a refined version
+                  // Replace it if the new token has more text (better refinement)
+                  const existing = finalTokensRef.current[existingIndex];
+                  const existingText = existing.text || "";
+                  const newText = token.text || "";
+                  
+                  if (newText.length > existingText.length || 
+                      (newText.length === existingText.length && newText !== existingText)) {
+                    // New token is better - replace the old one
+                    finalTokensRef.current[existingIndex] = token;
+                  }
+                  // Otherwise keep the existing token (it's already better)
+                } else {
+                  // New unique token (different time range) - add it
                   finalTokensRef.current.push(token);
                 }
               }
@@ -556,7 +573,6 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
             cleanupTimeoutRef.current = setTimeout(() => {
               setSegments([]);
               segmentsRef.current = [];
-              finalTokensSetRef.current.clear();
               finalTokensRef.current = [];
               transcriptIdRef.current = null;
               setTranscriptId(null); // Clear state
@@ -630,12 +646,14 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   // Get topic adherence (placeholder - would need to fetch from transcript)
   const topicAdherence = null; // Will be calculated on backend
 
-  // Count flags
+  // Count flags by type
   const totalFlags = (flaggedContent?.length || 0) + alerts.length;
   const profanityFlags = (flaggedContent?.filter(f => f.flagType === 'profanity').length || 0) + 
     alerts.filter(a => a.type === 'PROFANITY_ALERT').length;
   const languageFlags = (flaggedContent?.filter(f => f.flagType === 'language_policy').length || 0) + 
     alerts.filter(a => a.type === 'LANGUAGE_POLICY_ALERT').length;
+  const participationFlags = flaggedContent?.filter(f => f.flagType === 'participation').length || 0;
+  const offTopicFlags = flaggedContent?.filter(f => f.flagType === 'off_topic').length || 0;
 
   // Check for non-English words in segments
   const hasNonEnglish = segments.some(s => s.language && s.language.toLowerCase() !== selectedLanguage.toLowerCase());
@@ -748,6 +766,28 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
                     const isNonEnglish = segment.language && 
                       segment.language.toLowerCase() !== selectedLanguage.toLowerCase();
                     
+                    // Match flags to this segment by timestamp and speaker
+                    const segmentStartMs = segment.startTime * 1000;
+                    const segmentEndMs = segment.endTime * 1000;
+                    const segmentFlags = flaggedContent.filter(flag => {
+                      const flagTime = flag.timestampMs;
+                      const speakerMatch = !flag.speaker || flag.speaker === segment.speaker;
+                      const timeMatch = flagTime >= segmentStartMs && flagTime <= segmentEndMs;
+                      return speakerMatch && timeMatch;
+                    });
+
+                    // Group flags by type
+                    const flagsByType = {
+                      profanity: segmentFlags.filter(f => f.flagType === 'profanity'),
+                      language_policy: segmentFlags.filter(f => f.flagType === 'language_policy'),
+                      participation: segmentFlags.filter(f => f.flagType === 'participation'),
+                      off_topic: segmentFlags.filter(f => f.flagType === 'off_topic'),
+                    };
+
+                    // Check for inline detection
+                    const hasProfanityInline = hasProfanity(segment.text);
+                    const hasLanguageViolation = isNonEnglish;
+                    
                     return (
                       <div key={index} className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -757,25 +797,112 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
                           <span className="text-xs text-muted-foreground font-mono">
                             {formatTime(segment.startTime)}
                           </span>
-                          {isNonEnglish && (
-                            <Badge variant="outline" className="text-xs border-purple-500 text-purple-700 bg-purple-50">
-                              {segment.language} detected
+                          {segment.language && (
+                            <Badge variant="outline" className="text-xs">
+                              {segment.language}
                             </Badge>
                           )}
+                          {/* Show flag badges for all 4 types */}
+                          {(hasProfanityInline || flagsByType.profanity.length > 0) && (() => {
+                            const config = getFlagConfig('profanity');
+                            const Icon = config.icon;
+                            return (
+                              <Badge variant={config.variant} className={getFlagBadgeClassName('profanity')}>
+                                <Icon className="h-3 w-3 mr-1" />
+                                Profanity
+                              </Badge>
+                            );
+                          })()}
+                          {(hasLanguageViolation || flagsByType.language_policy.length > 0) && (() => {
+                            const config = getFlagConfig('language_policy');
+                            const Icon = config.icon;
+                            return (
+                              <Badge variant={config.variant} className={getFlagBadgeClassName('language_policy')}>
+                                <Icon className="h-3 w-3 mr-1" />
+                                Language Policy
+                              </Badge>
+                            );
+                          })()}
+                          {flagsByType.participation.length > 0 && (() => {
+                            const config = getFlagConfig('participation');
+                            const Icon = config.icon;
+                            return (
+                              <Badge variant={config.variant} className={getFlagBadgeClassName('participation')}>
+                                <Icon className="h-3 w-3 mr-1" />
+                                Participation
+                              </Badge>
+                            );
+                          })()}
+                          {flagsByType.off_topic.length > 0 && (() => {
+                            const config = getFlagConfig('off_topic');
+                            const Icon = config.icon;
+                            return (
+                              <Badge variant={config.variant} className={getFlagBadgeClassName('off_topic')}>
+                                <Icon className="h-3 w-3 mr-1" />
+                                Off-Topic
+                              </Badge>
+                            );
+                          })()}
                         </div>
                         <p className="text-sm leading-relaxed">
-                          {highlightProfanity(segment.text).map((part, idx) => 
-                            part.isProfanity ? (
-                              <mark
-                                key={idx}
-                                className="bg-red-200 dark:bg-red-900/50 text-red-900 dark:text-red-200 px-0.5 rounded font-semibold"
-                              >
-                                {part.text}
-                              </mark>
-                            ) : (
-                              <span key={idx}>{part.text}</span>
-                            )
-                          )}
+                          {(() => {
+                            // First highlight profanity
+                            const profanityParts = highlightProfanity(segment.text);
+                            // Then highlight language policy violations within each part
+                            const allowedLanguage = 'en'; // Default allowed language (can be made configurable)
+                            const allParts: Array<{ text: string; isProfanity: boolean; isLanguageViolation: boolean }> = [];
+                            
+                            for (const profanityPart of profanityParts) {
+                              if (profanityPart.isProfanity) {
+                                // If it's profanity, keep it as profanity (profanity takes priority)
+                                allParts.push({
+                                  text: profanityPart.text,
+                                  isProfanity: true,
+                                  isLanguageViolation: false,
+                                });
+                              } else {
+                                // Check for language violations in non-profanity text
+                                const langParts = highlightLanguagePolicyViolations(
+                                  profanityPart.text,
+                                  segment.language,
+                                  allowedLanguage
+                                );
+                                for (const langPart of langParts) {
+                                  allParts.push({
+                                    text: langPart.text,
+                                    isProfanity: false,
+                                    isLanguageViolation: langPart.isLanguageViolation,
+                                  });
+                                }
+                              }
+                            }
+                            
+                            return allParts.map((part, idx) => {
+                              if (part.isProfanity) {
+                                return (
+                                  <mark
+                                    key={idx}
+                                    className="bg-red-200 dark:bg-red-900/50 text-red-900 dark:text-red-200 px-0.5 rounded font-semibold"
+                                    title="Profanity detected"
+                                  >
+                                    {part.text}
+                                  </mark>
+                                );
+                              } else if (part.isLanguageViolation) {
+                                return (
+                                  <mark
+                                    key={idx}
+                                    className="bg-orange-200 dark:bg-orange-900/50 text-orange-900 dark:text-orange-200 px-0.5 rounded font-semibold"
+                                    title="Non-allowed language detected"
+                                  >
+                                    {part.text}
+                                  </mark>
+                                );
+                              } else {
+                                return <span key={idx}>{part.text}</span>;
+                              }
+                            });
+                          })()}
                         </p>
                       </div>
                     );
@@ -917,12 +1044,71 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
                 Total Flags
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-2">
               <p className="text-3xl font-bold text-destructive">{totalFlags}</p>
               {totalFlags > 0 && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  {profanityFlags + languageFlags} high priority
-                </p>
+                <div className="space-y-1.5">
+                  {profanityFlags > 0 && (() => {
+                    const config = getFlagConfig('profanity');
+                    const Icon = config.icon;
+                    return (
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <Icon className={getFlagConfig('profanity').textColor.replace('text-', 'h-3 w-3 ')} />
+                          <span>Profanity</span>
+                        </div>
+                        <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">
+                          {profanityFlags}
+                        </Badge>
+                      </div>
+                    );
+                  })()}
+                  {languageFlags > 0 && (() => {
+                    const config = getFlagConfig('language_policy');
+                    const Icon = config.icon;
+                    return (
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <Icon className="h-3 w-3 text-orange-600" />
+                          <span>Language Policy</span>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-orange-500 text-orange-700 bg-orange-50">
+                          {languageFlags}
+                        </Badge>
+                      </div>
+                    );
+                  })()}
+                  {participationFlags > 0 && (() => {
+                    const config = getFlagConfig('participation');
+                    const Icon = config.icon;
+                    return (
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <Icon className="h-3 w-3 text-blue-600" />
+                          <span>Participation</span>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-blue-500 text-blue-700 bg-blue-50">
+                          {participationFlags}
+                        </Badge>
+                      </div>
+                    );
+                  })()}
+                  {offTopicFlags > 0 && (() => {
+                    const config = getFlagConfig('off_topic');
+                    const Icon = config.icon;
+                    return (
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <Icon className="h-3 w-3 text-yellow-600" />
+                          <span>Off-Topic</span>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-yellow-500 text-yellow-700 bg-yellow-50">
+                          {offTopicFlags}
+                        </Badge>
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
             </CardContent>
           </Card>

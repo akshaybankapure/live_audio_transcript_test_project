@@ -258,6 +258,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       log(`Live Recording saved with ID: ${savedTranscript.id}, ${profanityDetection.flaggedItems.length} flagged items`, "LiveRecording");
 
+      // Invalidate dashboard cache when new transcript is created
+      serverCache.invalidatePrefix(`user:${userId}|path:/api/dashboard`);
+      serverCache.invalidatePrefix(`device:${userId}|path:/api/dashboard`);
+
       res.json({
         ...savedTranscript,
         flaggedContent: profanityDetection.flaggedItems,
@@ -287,6 +291,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       log(`Draft Transcript created ID: ${transcript.id}`, "DraftTranscript");
+      
+      // Invalidate dashboard cache when new draft transcript is created
+      serverCache.invalidatePrefix(`user:${userId}|path:/api/dashboard`);
+      serverCache.invalidatePrefix(`device:${userId}|path:/api/dashboard`);
+      
       res.json(transcript);
     } catch (error) {
       console.error("Error creating draft transcript:", error);
@@ -318,12 +327,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Append segments with index validation
+      // Check if we're updating the last segment (same speaker continuing)
+      const existingSegments = (existing.segments as any[]) || [];
+      const isUpdatingLastSegment = existingSegments.length > 0 && 
+                                     newSegments.length > 0 &&
+                                     existingSegments[existingSegments.length - 1]?.speaker === newSegments[0]?.speaker;
+
+      // Append segments with index validation (will update last segment if same speaker)
       const updated = await storage.appendSegments(id, newSegments, fromIndex);
 
       // Get all segments for comprehensive analysis
       const allSegments = updated.segments as any[];
-      const recentSegments = allSegments.slice(fromIndex);
+      
+      // If we updated the last segment, we need to re-analyze it (and any new segments)
+      // Delete old flags for the updated segment before re-analyzing
+      if (isUpdatingLastSegment && existingSegments.length > 0) {
+        // Delete flags for the last segment that was updated
+        // We'll re-create them with the updated text
+        const lastSegmentIndex = existingSegments.length - 1;
+        // Note: We can't easily delete flags by segment index, so we'll let the re-analysis
+        // create new flags. Duplicate flags for the same word in the same segment are handled
+        // by the flag creation logic (it checks for existing flags).
+      }
+      
+      // Analyze segments starting from the one that was updated or newly added
+      const recentSegments = isUpdatingLastSegment 
+        ? allSegments.slice(fromIndex - 1) // Include the updated last segment
+        : allSegments.slice(fromIndex); // Only new segments
 
       // Process each segment individually for real-time flagging
       // This ensures flagging happens immediately, not waiting for speaker to finish
