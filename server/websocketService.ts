@@ -92,7 +92,14 @@ class WebSocketService {
           const userId = await this.getUserIdFromSession(request);
           
           if (!userId) {
+            // Log more details for debugging
+            const cookies = request.headers.cookie;
             console.log('[WebSocket] No valid session found');
+            console.log('[WebSocket] Cookies present:', !!cookies);
+            if (cookies) {
+              const parsedCookies = parseCookie(cookies);
+              console.log('[WebSocket] Session cookie present:', !!parsedCookies['connect.sid']);
+            }
             socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
             socket.destroy();
             return;

@@ -1,4 +1,7 @@
-import type { InsertFlaggedContent } from "@shared/schema";
+/**
+ * Advanced frontend profanity detector with fuzzy matching
+ * Handles leet speak, variations, and live streaming detection
+ */
 
 /** CONFIG: profanity dictionary (expand as needed) */
 const PROFANITY = new Set([
@@ -126,19 +129,110 @@ function scoreCandidate(text: string): { score: number; match: string | null } {
   return best;
 }
 
-export interface ProfanityDetection {
-  hasProfanity: boolean;
-  flaggedItems: InsertFlaggedContent[];
-}
-
 export interface ProfanityMatch {
-  phrase: string;
-  match: string;
+  word: string;
+  index: number;
+  length: number;
   score: number;
-  severity: 'high' | 'medium';
+  match: string | null;
 }
 
-/** Live streaming detector (typing / ASR) */
+/**
+ * Detect profanity in text using fuzzy matching
+ * Returns array of matches with positions
+ */
+export function detectProfanity(text: string): ProfanityMatch[] {
+  const matches: ProfanityMatch[] = [];
+  const words = text.split(/\s+/);
+  
+  words.forEach((word, wordIndex) => {
+    // Find word boundaries in original text
+    const wordStart = text.indexOf(word, wordIndex > 0 ? text.indexOf(words[wordIndex - 1]) + words[wordIndex - 1].length : 0);
+    
+    if (wordStart === -1) return;
+    
+    const { score, match } = scoreCandidate(word);
+    const threshold = word.length <= 6 ? 0.95 : 0.85;
+    
+    if (score >= threshold && match) {
+      matches.push({
+        word,
+        index: wordStart,
+        length: word.length,
+        score,
+        match,
+      });
+    }
+  });
+  
+  return matches;
+}
+
+/**
+ * Check if text contains profanity
+ */
+export function hasProfanity(text: string): boolean {
+  const words = text.split(/\s+/);
+  for (const word of words) {
+    const { score, match } = scoreCandidate(word);
+    const threshold = word.length <= 6 ? 0.95 : 0.85;
+    if (score >= threshold && match) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Highlight profanity in text by wrapping matches in spans
+ * Returns JSX-ready array of text parts with highlighted profanity
+ */
+export function highlightProfanity(text: string): Array<{ text: string; isProfanity: boolean; score?: number }> {
+  const matches = detectProfanity(text);
+  
+  if (matches.length === 0) {
+    return [{ text, isProfanity: false }];
+  }
+  
+  // Sort matches by index (ascending)
+  const sortedMatches = [...matches].sort((a, b) => a.index - b.index);
+  
+  const parts: Array<{ text: string; isProfanity: boolean; score?: number }> = [];
+  let lastIndex = 0;
+  
+  for (const match of sortedMatches) {
+    // Add text before profanity
+    if (match.index > lastIndex) {
+      parts.push({
+        text: text.substring(lastIndex, match.index),
+        isProfanity: false,
+      });
+    }
+    
+    // Add profanity word
+    parts.push({
+      text: text.substring(match.index, match.index + match.length),
+      isProfanity: true,
+      score: match.score,
+    });
+    
+    lastIndex = match.index + match.length;
+  }
+  
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push({
+      text: text.substring(lastIndex),
+      isProfanity: false,
+    });
+  }
+  
+  return parts;
+}
+
+/**
+ * Live streaming detector (typing / ASR)
+ */
 export class LiveProfanityDetector {
   private windowSize: number;
   private tokens: string[];
@@ -148,9 +242,9 @@ export class LiveProfanityDetector {
     this.tokens = [];
   }
 
-  ingest(chunk: string): ProfanityMatch[] {
+  ingest(chunk: string): Array<{ phrase: string; match: string; score: number; severity: 'high' | 'medium' }> {
     const newTokens = chunk.split(/(\s+)/);
-    const detections: ProfanityMatch[] = [];
+    const detections: Array<{ phrase: string; match: string; score: number; severity: 'high' | 'medium' }> = [];
 
     for (const t of newTokens) {
       if (t.trim() !== "") this.tokens.push(t);
@@ -182,53 +276,4 @@ export class LiveProfanityDetector {
   reset(): void {
     this.tokens = [];
   }
-}
-
-/**
- * Detect profanity in transcript segments
- * Uses fuzzy matching to catch variations and leet speak
- */
-export function detectProfanity(
-  segments: any[],
-  transcriptId: string
-): ProfanityDetection {
-  const flaggedItems: InsertFlaggedContent[] = [];
-
-  for (const segment of segments) {
-    const words = segment.text.split(/\s+/);
-    const startTimeMs = segment.startTime * 1000;
-    const durationMs = (segment.endTime - segment.startTime) * 1000;
-    const msPerWord = durationMs / words.length;
-
-    words.forEach((word: string, index: number) => {
-      const { score, match } = scoreCandidate(word);
-      
-      // Use threshold based on word length
-      const threshold = word.length <= 6 ? 0.95 : 0.85;
-      
-      if (score >= threshold && match) {
-        // Calculate approximate timestamp for this word
-        const wordTimestampMs = Math.floor(startTimeMs + (index * msPerWord));
-        
-        // Get context (surrounding words)
-        const contextStart = Math.max(0, index - 3);
-        const contextEnd = Math.min(words.length, index + 4);
-        const context = words.slice(contextStart, contextEnd).join(" ");
-
-        flaggedItems.push({
-          transcriptId,
-          flaggedWord: word,
-          context,
-          timestampMs: wordTimestampMs,
-          speaker: segment.speaker,
-          flagType: 'profanity',
-        });
-      }
-    });
-  }
-
-  return {
-    hasProfanity: flaggedItems.length > 0,
-    flaggedItems,
-  };
 }

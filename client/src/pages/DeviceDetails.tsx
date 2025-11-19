@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation, useRoute } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,7 +19,8 @@ import {
   TrendingDown,
   BarChart3,
   PieChart,
-  Activity
+  Activity,
+  RefreshCw
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -32,6 +33,9 @@ import { format } from "date-fns";
 import type { Transcript, FlaggedContent, User, TranscriptSegment } from "@shared/schema";
 import TranscriptSegmentComponent from "@/components/TranscriptSegment";
 import { getSpeakerColor } from "@/lib/transcripts";
+import { hasProfanity } from "@/lib/profanityDetector";
+import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 
 type FlaggedContentWithTranscript = FlaggedContent & { transcript: Transcript };
 
@@ -56,6 +60,8 @@ interface SpeakerAnalytics {
 export default function DeviceDetails() {
   const [, params] = useRoute("/dashboard/device/:deviceId");
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const deviceId = params?.deviceId || null;
 
   const [timeRange, setTimeRange] = useState<'1h' | '12h' | 'today' | 'live' | 'all' | 'custom' | 'session'>('live');
@@ -69,6 +75,9 @@ export default function DeviceDetails() {
   const { data: deviceData, isLoading } = useQuery<DeviceDashboard>({
     queryKey: ["/api/dashboard/device", deviceId],
     enabled: !!deviceId,
+    refetchOnMount: true, // Always refetch to get latest sessions
+    staleTime: 0, // Always consider data stale to get fresh sessions
+    refetchInterval: 5000, // Refetch every 5 seconds while on this page to see new sessions
   });
 
   // Filter sessions by time range
@@ -128,6 +137,23 @@ export default function DeviceDetails() {
     
     return true;
   }) || [];
+
+  // Debug logging
+  useEffect(() => {
+    if (deviceData) {
+      console.log('[DeviceDetails] Sessions data:', {
+        total: deviceData.sessions.length,
+        filtered: filteredSessions.length,
+        timeRange,
+        sessions: deviceData.sessions.map(s => ({
+          id: s.id,
+          status: s.status,
+          segmentsCount: Array.isArray(s.segments) ? s.segments.length : (typeof s.segments === 'string' ? JSON.parse(s.segments || '[]').length : 0),
+          createdAt: s.createdAt,
+        })),
+      });
+    }
+  }, [deviceData, filteredSessions.length, timeRange]);
 
   // Filter flagged content by time range, date, and session
   const filteredFlags = deviceData?.flaggedContent.filter(flag => {
@@ -515,6 +541,7 @@ export default function DeviceDetails() {
                 {analytics.length > 0 ? (
                   analytics.map((speaker, index) => {
                     const color = getSpeakerColor(speaker.speakerId);
+                    // Percentage is already in 0-100 format from analytics calculation
                     const isDominant = speaker.percentage > 50;
                     const isSilent = speaker.percentage < 5;
                     
@@ -532,7 +559,7 @@ export default function DeviceDetails() {
                               <div className="flex items-center gap-1.5 mb-0.5">
                                 <p className="text-xs font-semibold truncate">{speaker.speakerId}</p>
                                 {isDominant && (
-                                  <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5">
+                                  <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1 py-0 h-3.5">
                                     <TrendingUp className="h-2 w-2 mr-0.5" />
                                     Dom
                                   </Badge>
@@ -560,7 +587,13 @@ export default function DeviceDetails() {
                           <div className="pt-2 border-t border-border/50">
                             <div className="flex items-center justify-between mb-1.5">
                               <span className="text-[9px] text-muted-foreground uppercase tracking-wide">Flags</span>
-                              <span className={`text-xs font-bold ${totalSpeakerFlags > 0 ? 'text-destructive' : ''}`}>
+                              <span className={`text-xs font-bold ${
+                                speaker.profanityCount > 0 || speaker.languagePolicyCount > 0 
+                                  ? 'text-destructive' 
+                                  : speaker.offTopicCount > 0 
+                                  ? 'text-yellow-600'
+                                  : 'text-blue-600'
+                              }`}>
                                 {totalSpeakerFlags}
                               </span>
                             </div>
@@ -582,7 +615,11 @@ export default function DeviceDetails() {
                                 </Badge>
                               )}
                               {speaker.participationFlags > 0 && (
-                                <Badge variant="outline" className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5">
+                                <Badge 
+                                  variant="outline" 
+                                  className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5"
+                                  title={`${speaker.participationFlags} participation ${speaker.participationFlags === 1 ? 'flag' : 'flags'}`}
+                                >
                                   {speaker.participationFlags}P
                                 </Badge>
                               )}
@@ -689,10 +726,34 @@ export default function DeviceDetails() {
                 {/* Right: Sessions Section */}
                 <Card className="flex flex-col min-h-0">
                   <CardHeader className="flex-shrink-0 pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <FileText className="h-4 w-4" />
-                      Sessions ({filteredSessions.length})
-                    </CardTitle>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        Sessions ({filteredSessions.length})
+                      </CardTitle>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={() => {
+                          queryClient.invalidateQueries({ queryKey: ["/api/dashboard/device", deviceId] });
+                          // Force refresh from Soniox
+                          queryClient.refetchQueries({ 
+                            queryKey: ["/api/dashboard/device", deviceId],
+                            queryFn: async () => {
+                              const response = await fetch(`/api/dashboard/device/${deviceId}?refreshFromSoniox=true`, {
+                                credentials: 'include',
+                              });
+                              if (!response.ok) throw new Error('Failed to refresh');
+                              return response.json();
+                            },
+                          });
+                        }}
+                        title="Refresh from Soniox"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </CardHeader>
                   <CardContent className="flex-1 overflow-hidden p-2 sm:p-3">
                     <ScrollArea className="h-full pr-1">
@@ -712,17 +773,74 @@ export default function DeviceDetails() {
                           const formattedDuration = durationMinutes > 0 ? `${durationMinutes}m ${durationSeconds}s` : `${durationSeconds}s`;
                           
                           // Parse participation balance
-                          const participationBalance = session.participationBalance as Record<string, { talkTime?: number; percentage?: number }> | null;
-                          const participationSpeakers = participationBalance ? Object.entries(participationBalance)
-                            .map(([speakerId, data]) => ({ 
-                              speakerId, 
-                              talkTime: data?.talkTime || 0,
-                              percentage: data?.percentage || 0
-                            }))
-                            .filter(s => s.percentage > 0)
-                            .sort((a, b) => (b.percentage || 0) - (a.percentage || 0)) : [];
-                          const dominantSpeaker = participationSpeakers.find(s => (s.percentage || 0) > 50);
-                          const silentSpeakers = participationSpeakers.filter(s => (s.percentage || 0) < 5 && (s.percentage || 0) > 0);
+                          // The stored balance can be either:
+                          // 1. The full ParticipationBalance object with speakers array, dominantSpeaker, silentSpeakers
+                          // 2. A Record mapping speakerId to { talkTime, percentage }
+                          const participationBalance = session.participationBalance as any;
+                          let participationSpeakers: Array<{ speakerId: string; talkTime: number; percentage: number }> = [];
+                          let dominantSpeaker: { speakerId: string; percentage: number } | undefined;
+                          let silentSpeakers: Array<{ speakerId: string; percentage: number }> = [];
+                          
+                          if (participationBalance) {
+                            // Check if it's the full ParticipationBalance object
+                            if (participationBalance.speakers && Array.isArray(participationBalance.speakers)) {
+                              participationSpeakers = participationBalance.speakers.map((s: any) => ({
+                                speakerId: s.speakerId,
+                                talkTime: s.talkTime || 0,
+                                percentage: s.percentage || 0,
+                              }));
+                              
+                              // Use stored dominantSpeaker and silentSpeakers if available
+                              if (participationBalance.dominantSpeaker) {
+                                const dominant = participationSpeakers.find(s => s.speakerId === participationBalance.dominantSpeaker);
+                                if (dominant) {
+                                  dominantSpeaker = dominant;
+                                }
+                              }
+                              
+                              if (participationBalance.silentSpeakers && Array.isArray(participationBalance.silentSpeakers)) {
+                                silentSpeakers = participationBalance.silentSpeakers
+                                  .map((speakerId: string) => participationSpeakers.find(s => s.speakerId === speakerId))
+                                  .filter((s): s is { speakerId: string; talkTime: number; percentage: number } => s !== undefined);
+                              }
+                            } else if (typeof participationBalance === 'object') {
+                              // Legacy format: Record<string, { talkTime, percentage }>
+                              participationSpeakers = Object.entries(participationBalance)
+                                .map(([speakerId, data]: [string, any]) => ({ 
+                                  speakerId, 
+                                  talkTime: data?.talkTime || 0,
+                                  percentage: data?.percentage || 0
+                                }))
+                                .filter(s => s.percentage > 0);
+                              
+                              // Calculate dynamic thresholds based on number of speakers
+                              // Note: percentages in legacy format are stored as decimals (0-1), not percentages (0-100)
+                              const numberOfSpeakers = participationSpeakers.length;
+                              if (numberOfSpeakers > 0) {
+                                const fairShare = 1 / numberOfSpeakers;
+                                const dominanceThreshold = Math.min(fairShare * 1.5, 0.6); // 1.5x fair share, max 60% (as decimal)
+                                const silenceThreshold = Math.max(fairShare * 0.3, 0.05); // 0.3x fair share, min 5% (as decimal)
+                                
+                                // Find dominant speaker (only if 2+ speakers)
+                                // Compare with decimal thresholds since stored percentages are decimals
+                                if (numberOfSpeakers >= 2) {
+                                  const dominant = participationSpeakers.find(s => (s.percentage || 0) > dominanceThreshold);
+                                  if (dominant) {
+                                    dominantSpeaker = dominant;
+                                  }
+                                }
+                                
+                                // Find silent speakers (only if 3+ speakers)
+                                // Compare with decimal thresholds since stored percentages are decimals
+                                if (numberOfSpeakers >= 3) {
+                                  silentSpeakers = participationSpeakers.filter(s => (s.percentage || 0) < silenceThreshold && (s.percentage || 0) > 0);
+                                }
+                              }
+                            }
+                            
+                            // Sort by percentage descending
+                            participationSpeakers.sort((a, b) => b.percentage - a.percentage);
+                          }
                           
                           // Get flag counts for this session
                           const sessionFlags = filteredFlags.filter(f => f.transcriptId === session.id);
@@ -865,8 +983,12 @@ export default function DeviceDetails() {
                                           </Badge>
                                         )}
                                         {sessionParticipation > 0 && (
-                                          <Badge variant="outline" className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5">
-                                            {sessionParticipation}Par
+                                          <Badge 
+                                            variant="outline" 
+                                            className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5"
+                                            title={`${sessionParticipation} participation ${sessionParticipation === 1 ? 'flag' : 'flags'} (dominance/silence issues)`}
+                                          >
+                                            {sessionParticipation}P
                                           </Badge>
                                         )}
                                       </div>
@@ -882,7 +1004,7 @@ export default function DeviceDetails() {
                                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">Balance</p>
                                         </div>
                                         {dominantSpeaker && (
-                                          <Badge variant="destructive" className="text-[9px] px-1.5 py-0 h-4 flex-shrink-0">
+                                          <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1.5 py-0 h-4 flex-shrink-0">
                                             <TrendingUp className="h-2 w-2 mr-0.5" />
                                             Imbalanced
                                           </Badge>
@@ -897,14 +1019,15 @@ export default function DeviceDetails() {
                                         <div className="flex gap-0.5">
                                           {participationSpeakers.slice(0, 4).map((sp) => {
                                             const color = getSpeakerColor(sp.speakerId);
-                                            const percentage = sp.percentage || 0;
+                                            // Percentage is stored as decimal (0-1), convert to 0-100 for display
+                                            const percentage = (sp.percentage || 0) * 100;
                                             return (
                                               <div
                                                 key={sp.speakerId}
                                                 className="flex-1 h-1.5 rounded"
                                                 style={{ 
                                                   backgroundColor: color,
-                                                  opacity: percentage / 100
+                                                  opacity: Math.min(percentage / 100, 1)
                                                 }}
                                                 title={`${sp.speakerId}: ${percentage.toFixed(1)}%`}
                                               />
@@ -939,7 +1062,8 @@ export default function DeviceDetails() {
                                     <div className="flex items-center gap-2 flex-wrap">
                                       {participationSpeakers.slice(0, 4).map((sp) => {
                                         const color = getSpeakerColor(sp.speakerId);
-                                        const percentage = sp.percentage || 0;
+                                        // Percentage is stored as decimal (0-1), convert to 0-100 for display
+                                        const percentage = (sp.percentage || 0) * 100;
                                         return (
                                           <div key={sp.speakerId} className="flex items-center gap-1.5">
                                             <div
@@ -957,9 +1081,9 @@ export default function DeviceDetails() {
                                         </span>
                                       )}
                                       {dominantSpeaker && (
-                                        <Badge variant="destructive" className="text-[9px] px-1.5 py-0 h-4 ml-auto">
+                                        <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1.5 py-0 h-4 ml-auto">
                                           <TrendingUp className="h-2 w-2 mr-0.5" />
-                                          {dominantSpeaker.speakerId} dominant
+                                          {dominantSpeaker.speakerId} dominant ({((dominantSpeaker.percentage || 0) * 100).toFixed(0)}%)
                                         </Badge>
                                       )}
                                       {silentSpeakers.length > 0 && (
@@ -972,26 +1096,70 @@ export default function DeviceDetails() {
                                   </div>
                                 )}
 
-                                {/* Transcript Preview */}
+                                {/* Transcript Preview - Full Transcript Display */}
                                 {isExpanded && segments.length > 0 && (
                                   <>
                                     <Separator className="my-3" />
-                                    <div>
-                                      <div className="flex items-center justify-between mb-2">
-                                        <h4 className="text-xs font-medium">Full Transcript</h4>
-                                        <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4">{segments.length} segments</Badge>
-                                      </div>
-                                      <ScrollArea className="h-[200px] sm:h-[300px] md:h-[350px] pr-2">
-                                        <div className="space-y-1.5">
-                                          {segments.map((segment, idx) => (
-                                            <TranscriptSegmentComponent
-                                              key={idx}
-                                              segment={segment}
-                                              speakerColor={getSpeakerColor(segment.speaker)}
-                                            />
-                                          ))}
+                                    <div className="w-full">
+                                      <div className="flex items-center justify-between mb-3">
+                                        <h4 className="text-sm font-semibold">Full Transcript</h4>
+                                        <div className="flex items-center gap-2">
+                                          <Badge variant="secondary" className="text-xs px-2 py-0.5 h-5">{segments.length} segments</Badge>
+                                          {segments.some(s => hasProfanity(s.text)) && (
+                                            <Button
+                                              variant="destructive"
+                                              size="sm"
+                                              className="text-xs h-5 px-2"
+                                              onClick={async () => {
+                                                try {
+                                                  // Quick report: create flags for all profanity in this transcript
+                                                  const profanitySegments = segments.filter(s => hasProfanity(s.text));
+                                                  const response = await fetch(`/api/transcripts/${session.id}/quick-report`, {
+                                                    method: 'POST',
+                                                    credentials: 'include',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                      segments: profanitySegments.map(s => ({
+                                                        text: s.text,
+                                                        startTime: s.startTime,
+                                                        endTime: s.endTime,
+                                                        speaker: s.speaker,
+                                                      })),
+                                                    }),
+                                                  });
+                                                  if (response.ok) {
+                                                    toast({
+                                                      title: 'Reported',
+                                                      description: `Reported ${profanitySegments.length} profanity instance(s)`,
+                                                    });
+                                                    // Refetch to update flags
+                                                    queryClient.invalidateQueries({ queryKey: ['/api/flagged-content'] });
+                                                  }
+                                                } catch (error) {
+                                                  console.error('Failed to report:', error);
+                                                }
+                                              }}
+                                            >
+                                              <Flag className="h-3 w-3 mr-1" />
+                                              Quick Report
+                                            </Button>
+                                          )}
                                         </div>
-                                      </ScrollArea>
+                                      </div>
+                                      <div className="border rounded-md bg-muted/30 overflow-hidden">
+                                        <ScrollArea className="h-[400px] sm:h-[500px] md:h-[600px] lg:h-[700px] w-full">
+                                          <div className="p-4 space-y-2">
+                                            {segments.map((segment, idx) => (
+                                              <div key={`${session.id}-segment-${idx}`} className="w-full">
+                                                <TranscriptSegmentComponent
+                                                  segment={segment}
+                                                  speakerColor={getSpeakerColor(segment.speaker)}
+                                                />
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </ScrollArea>
+                                      </div>
                                     </div>
                                   </>
                                 )}

@@ -62,8 +62,20 @@ export function analyzeParticipationBalance(
   const speakers: SpeakerParticipation[] = [];
   let dominantSpeaker: string | undefined;
   const silentSpeakers: string[] = [];
-  const DOMINANCE_THRESHOLD = config?.dominanceThreshold ?? 0.5; // Default: 50%
-  const SILENCE_THRESHOLD = config?.silenceThreshold ?? 0.05; // Default: 5%
+  
+  // Calculate dynamic thresholds based on number of speakers
+  // For dominance: a speaker is dominant if they take more than 1.5x their fair share
+  // For silence: a speaker is silent if they take less than 0.3x their fair share
+  const numberOfSpeakers = speakerStats.size;
+  const fairShare = numberOfSpeakers > 0 ? 1 / numberOfSpeakers : 1;
+  
+  // Use custom thresholds if provided, otherwise calculate dynamic thresholds
+  const DOMINANCE_THRESHOLD = config?.dominanceThreshold ?? (fairShare * 1.5); // Default: 1.5x fair share
+  const SILENCE_THRESHOLD = config?.silenceThreshold ?? (fairShare * 0.3); // Default: 0.3x fair share
+  
+  // Cap thresholds at reasonable limits
+  const finalDominanceThreshold = Math.min(DOMINANCE_THRESHOLD, 0.6); // Never flag below 60% as dominant
+  const finalSilenceThreshold = Math.max(SILENCE_THRESHOLD, 0.05); // Never flag above 5% as silent
 
   for (const [speakerId, stats] of speakerStats.entries()) {
     const percentage = totalTalkTime > 0 ? stats.talkTime / totalTalkTime : 0;
@@ -75,11 +87,15 @@ export function analyzeParticipationBalance(
       percentage,
     });
 
-    if (percentage > DOMINANCE_THRESHOLD) {
+    // Flag as dominant if percentage exceeds threshold
+    // Only flag if there are at least 2 speakers (can't dominate a solo conversation)
+    if (numberOfSpeakers >= 2 && percentage > finalDominanceThreshold) {
       dominantSpeaker = speakerId;
     }
 
-    if (percentage < SILENCE_THRESHOLD && stats.segmentCount > 0) {
+    // Flag as silent if percentage is below threshold and they have spoken
+    // Only flag if there are at least 3 speakers (in 2-person conversations, one might naturally be quieter)
+    if (numberOfSpeakers >= 3 && percentage < finalSilenceThreshold && stats.segmentCount > 0) {
       silentSpeakers.push(speakerId);
     }
   }

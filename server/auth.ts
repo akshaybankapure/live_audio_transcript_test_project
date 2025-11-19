@@ -25,11 +25,9 @@ export function getSession() {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production', // Only use secure cookies in production
     maxAge: sessionTtl,
+    sameSite: process.env.NODE_ENV === 'production' && process.env.ALLOWED_ORIGIN ? 'none' : 'lax', // Use 'lax' in development, 'none' in production with CORS
+    path: '/', // Ensure cookie is available for all paths
   };
-  
-  if (process.env.ALLOWED_ORIGIN) {
-    cookieConfig.sameSite = 'none';
-  }
   
   return session({
     secret: sessionSecret,

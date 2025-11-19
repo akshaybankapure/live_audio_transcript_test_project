@@ -49,19 +49,41 @@ function Navigation() {
     },
   });
 
-  // Prefetch dashboard data when user hovers over dashboard link or when authenticated
+  // Aggressive prefetching: Prefetch all dashboard data when user is authenticated
   useEffect(() => {
     if (user) {
-      // Prefetch dashboard data immediately after auth
-      queryClient.prefetchQuery({
-        queryKey: ['/api/dashboard/overview?timeRange=live'],
-      });
-      // Prefetch other frequently used data
-      queryClient.prefetchQuery({
-        queryKey: ['/api/transcripts'],
-      });
-      queryClient.prefetchQuery({
-        queryKey: ['/api/flagged-content'],
+      // Prefetch dashboard data immediately after auth (with all common time ranges)
+      const prefetchPromises = [
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=live'],
+          staleTime: 30 * 60 * 1000, // 30 minutes
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=1h'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=12h'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=today'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        // Prefetch other frequently used data
+        queryClient.prefetchQuery({
+          queryKey: ['/api/transcripts'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/flagged-content'],
+          staleTime: 30 * 60 * 1000,
+        }),
+      ];
+      
+      // Prefetch in background (don't block UI)
+      Promise.allSettled(prefetchPromises).catch(() => {
+        // Ignore errors - prefetching is best effort
       });
     }
   }, [user, queryClient]);
@@ -150,9 +172,22 @@ function Navigation() {
                 className="gap-2"
                 data-testid="button-nav-dashboard"
                 onMouseEnter={() => {
-                  // Prefetch dashboard data on hover
-                  queryClient.prefetchQuery({
-                    queryKey: ['/api/dashboard/overview'],
+                  // Aggressive prefetch on hover - prefetch all common time ranges
+                  Promise.allSettled([
+                    queryClient.prefetchQuery({
+                      queryKey: ['/api/dashboard/overview?timeRange=live'],
+                      staleTime: 30 * 60 * 1000,
+                    }),
+                    queryClient.prefetchQuery({
+                      queryKey: ['/api/dashboard/overview?timeRange=1h'],
+                      staleTime: 30 * 60 * 1000,
+                    }),
+                    queryClient.prefetchQuery({
+                      queryKey: ['/api/dashboard/overview?timeRange=12h'],
+                      staleTime: 30 * 60 * 1000,
+                    }),
+                  ]).catch(() => {
+                    // Ignore errors - prefetching is best effort
                   });
                 }}
               >
@@ -260,11 +295,25 @@ function Router() {
     });
   }, []);
 
-  // Prefetch dashboard data when on home page (likely next navigation)
+  // Aggressive prefetching: Prefetch dashboard data when on home page (likely next navigation)
   useEffect(() => {
     if (location === "/") {
-      queryClient.prefetchQuery({
-        queryKey: ['/api/dashboard/overview'],
+      // Prefetch all common dashboard views in background
+      Promise.allSettled([
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=live'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=1h'],
+          staleTime: 30 * 60 * 1000,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['/api/dashboard/overview?timeRange=12h'],
+          staleTime: 30 * 60 * 1000,
+        }),
+      ]).catch(() => {
+        // Ignore errors - prefetching is best effort
       });
     }
   }, [location, queryClient]);

@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import type { TranscriptSegment as TranscriptSegmentType } from "@shared/schema";
+import { highlightProfanity, hasProfanity } from "@/lib/profanityDetector";
 
 interface TranscriptSegmentProps {
   segment: TranscriptSegmentType;
@@ -81,9 +82,26 @@ export default function TranscriptSegment({
             {segment.language}
           </Badge>
         )}
+        {hasProfanity(segment.text) && (
+          <Badge variant="destructive" className="text-xs">
+            Profanity
+          </Badge>
+        )}
       </div>
-      <p className="text-base leading-relaxed" data-testid="text-transcript">
-        {segment.text}
+      <p className="text-base leading-relaxed whitespace-pre-wrap break-words" data-testid="text-transcript">
+        {highlightProfanity(segment.text).map((part, idx) => 
+          part.isProfanity ? (
+            <mark
+              key={idx}
+              className="bg-red-200 dark:bg-red-900/50 text-red-900 dark:text-red-200 px-0.5 rounded font-semibold"
+              title="Profanity detected"
+            >
+              {part.text}
+            </mark>
+          ) : (
+            <span key={idx}>{part.text}</span>
+          )
+        )}
       </p>
     </div>
   );
