@@ -38,58 +38,6 @@ The system implements two key metrics for analyzing group discussions:
 }
 ```
 
-### Improvements & Enhancements
-
-#### Option 1: Configurable Thresholds
-Allow teachers to set custom thresholds per session:
-
-```typescript
-interface ParticipationConfig {
-  dominanceThreshold?: number; // Default: 0.5
-  silenceThreshold?: number;   // Default: 0.05
-  minSpeakers?: number;        // Minimum speakers to analyze
-}
-
-export function analyzeParticipationBalance(
-  segments: TranscriptSegment[],
-  config?: ParticipationConfig
-): ParticipationBalance {
-  const DOMINANCE_THRESHOLD = config?.dominanceThreshold ?? 0.5;
-  const SILENCE_THRESHOLD = config?.silenceThreshold ?? 0.05;
-  // ... rest of implementation
-}
-```
-
-#### Option 2: Time-Based Analysis
-Track participation over time to identify when imbalance occurs:
-
-```typescript
-interface TimeWindow {
-  startTime: number;
-  endTime: number;
-  participation: ParticipationBalance;
-}
-
-export function analyzeParticipationOverTime(
-  segments: TranscriptSegment[],
-  windowSize: number = 60 // seconds
-): TimeWindow[] {
-  // Split segments into time windows and analyze each
-}
-```
-
-#### Option 3: Turn-Taking Analysis
-Analyze turn-taking patterns (not just total time):
-
-```typescript
-interface TurnTakingMetrics {
-  averageTurnLength: number;
-  turnCount: number;
-  interruptions: number;
-  responseTime: number; // Time between speakers
-}
-```
-
 ## 2. Topic Adherence
 
 ### Current Implementation
@@ -129,212 +77,78 @@ OFF_TOPIC_INDICATORS = [
 }
 ```
 
-### Improvements & Enhancements
+## Flag Types and Color Coding
 
-#### Option 1: Configurable Topic Keywords (Recommended)
-Allow teachers to set topic keywords per session:
+The system implements **4 flag types** with consistent color coding throughout the application:
 
-```typescript
-// Add to transcript schema
-export const transcripts = pgTable("transcripts", {
-  // ... existing fields
-  topicKeywords: jsonb("topic_keywords"), // Array of keywords
-  topicPrompt: text("topic_prompt"), // The original prompt/question
-});
+1. **Profanity** (Red - High Critical)
+   - Color: Red (`destructive` variant)
+   - Icon: `AlertTriangle`
+   - Detected: Real-time during live transcription
+   - Highlighting: Red background in transcript text
 
-// Update detector
-export function analyzeTopicAdherence(
-  segments: TranscriptSegment[],
-  transcriptId: string,
-  topicKeywords?: string[], // From transcript
-  topicPrompt?: string      // For semantic analysis
-): TopicAdherenceResult {
-  const keywords = topicKeywords || DEFAULT_TOPIC_KEYWORDS;
-  // ... rest of implementation
-}
-```
+2. **Language Policy** (Orange - Low Critical)
+   - Color: Orange
+   - Icon: `Languages`
+   - Detected: Real-time during live transcription
+   - Highlighting: Orange background for non-allowed language words
+   - Default: English-only policy (configurable via `ALLOWED_LANGUAGE` env var)
 
-#### Option 2: Semantic Similarity (Advanced)
-Use embeddings/LLM for better topic detection:
+3. **Participation** (Blue - Low Critical)
+   - Color: Blue
+   - Icon: `UserX`
+   - Detected: At session end (requires full conversation context)
+   - Flags: Dominant speakers (>threshold% talk time) and silent speakers (<threshold% talk time)
 
-```typescript
-import { OpenAI } from 'openai';
+4. **Off-Topic** (Yellow - Not Critical unless outside acceptable range)
+   - Color: Yellow
+   - Icon: `MessageSquareX`
+   - Detected: At session end (requires full conversation context)
+   - Flags: Segments that drift significantly from the discussion topic
 
-export async function analyzeTopicAdherenceSemantic(
-  segments: TranscriptSegment[],
-  topicPrompt: string
-): Promise<TopicAdherenceResult> {
-  const openai = new OpenAI();
-  
-  // Get embedding for topic prompt
-  const promptEmbedding = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: topicPrompt,
-  });
-  
-  // Analyze each segment
-  for (const segment of segments) {
-    const segmentEmbedding = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: segment.text,
-    });
-    
-    // Calculate cosine similarity
-    const similarity = cosineSimilarity(
-      promptEmbedding.data[0].embedding,
-      segmentEmbedding.data[0].embedding
-    );
-    
-    // Flag if similarity < threshold (e.g., 0.7)
-    if (similarity < 0.7) {
-      // Flag as off-topic
-    }
-  }
-}
-```
+**Centralized Configuration**: All flag types use a shared configuration system (`client/src/lib/flagConfig.ts`) for consistent styling across:
+- Dashboard cards
+- Live recording panel
+- Transcript segments
+- Device details view
+- Flag lists
 
-#### Option 3: Hybrid Approach (Recommended for MVP)
-Combine keyword matching with simple semantic checks:
+## Real-Time vs End-of-Session Analysis
 
-```typescript
-export function analyzeTopicAdherenceHybrid(
-  segments: TranscriptSegment[],
-  transcriptId: string,
-  topicKeywords: string[],
-  topicPrompt?: string
-): TopicAdherenceResult {
-  // 1. Keyword matching (fast, good for common words)
-  const keywordResult = analyzeTopicAdherence(segments, transcriptId, topicKeywords);
-  
-  // 2. Simple semantic checks (for longer segments)
-  // - Check if segment contains topic-related phrases
-  // - Use word frequency analysis
-  // - Check for topic-related questions
-  
-  // 3. Combine results
-  return {
-    score: (keywordResult.score * 0.7) + (semanticScore * 0.3),
-    offTopicSegments: [...keywordResult.offTopicSegments, ...semanticOffTopic],
-    // ...
-  };
-}
-```
+### Real-Time Flagging (During Live Recording)
+- **Profanity**: Detected immediately as segments arrive
+- **Language Policy**: Detected immediately when non-allowed language is detected
+- **WebSocket Alerts**: Broadcast immediately for profanity and language violations
+- **UI Updates**: Flags appear in transcript with color-coded highlighting
 
-#### Option 4: Context-Aware Analysis
-Consider conversation flow and context:
-
-```typescript
-export function analyzeTopicAdherenceContextual(
-  segments: TranscriptSegment[],
-  topicPrompt: string
-): TopicAdherenceResult {
-  // Track conversation flow
-  let topicMomentum = 1.0; // Starts high
-  
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    const previousSegments = segments.slice(Math.max(0, i - 3), i);
-    
-    // Check if segment continues topic from previous segments
-    const contextualScore = checkContextualRelevance(
-      segment,
-      previousSegments,
-      topicPrompt
-    );
-    
-    // Adjust momentum based on recent segments
-    topicMomentum = (topicMomentum * 0.8) + (contextualScore * 0.2);
-    
-    // Flag if momentum drops too low
-    if (topicMomentum < 0.5) {
-      // Flag as off-topic
-    }
-  }
-}
-```
-
-## Implementation Recommendations
-
-### Phase 1: Make It Configurable (Quick Win)
-1. Add `topicKeywords` and `topicPrompt` fields to transcript schema
-2. Update `analyzeTopicAdherence` to accept custom keywords
-3. Add UI for teachers to set topic keywords when creating/starting a session
-
-### Phase 2: Improve Detection (Medium Effort)
-1. Implement hybrid approach (keyword + simple semantic)
-2. Add conversation flow tracking
-3. Improve off-topic indicator detection
-
-### Phase 3: Advanced Features (Long Term)
-1. Integrate LLM/embeddings for semantic similarity
-2. Add machine learning model for topic classification
-3. Implement real-time topic drift detection
-
-## Database Schema Updates Needed
-
-```typescript
-// Add to transcripts table
-export const transcripts = pgTable("transcripts", {
-  // ... existing fields
-  topicPrompt: text("topic_prompt"), // The discussion prompt/question
-  topicKeywords: jsonb("topic_keywords"), // Custom keywords for this session
-  participationConfig: jsonb("participation_config"), // Custom thresholds
-});
-```
-
-## API Endpoints to Add
-
-```typescript
-// Set topic for a session
-app.post("/api/transcripts/:id/topic", isAuthenticated, async (req, res) => {
-  const { topicPrompt, topicKeywords } = req.body;
-  await storage.updateTranscript(id, { topicPrompt, topicKeywords });
-});
-
-// Get participation config
-app.get("/api/transcripts/:id/participation-config", isAuthenticated, async (req, res) => {
-  const config = await storage.getParticipationConfig(id);
-  res.json(config);
-});
-
-// Set participation config
-app.post("/api/transcripts/:id/participation-config", isAuthenticated, async (req, res) => {
-  const { dominanceThreshold, silenceThreshold } = req.body;
-  await storage.updateParticipationConfig(id, { dominanceThreshold, silenceThreshold });
-});
-```
-
-## UI Components Needed
-
-1. **Topic Setup Form** - When starting a session, allow teacher to:
-   - Enter the discussion prompt/question
-   - Add custom topic keywords
-   - Set participation thresholds
-
-2. **Metrics Dashboard** - Display:
-   - Participation balance visualization (pie chart, bar chart)
-   - Topic adherence score with trend over time
-   - Speaker participation timeline
-   - Off-topic segments highlighted in transcript
-
-3. **Real-time Alerts** - Show warnings when:
-   - One speaker dominates
-   - Topic drifts significantly
-   - Silent speakers detected
+### End-of-Session Analysis (After Recording Completes)
+- **Participation Balance**: Requires full conversation context to calculate percentages
+- **Topic Adherence**: Requires full conversation context to assess overall topic drift
+- **Analysis Trigger**: Automatically runs when transcript is marked as `complete`
+- **Flag Creation**: Creates flags for participation imbalances and off-topic segments
 
 ## Current Usage in Codebase
 
 - **Participation Balance**: Calculated in `analyzeContent()` and stored in `participationBalance` field
 - **Topic Adherence**: Calculated in `analyzeContent()` and stored in `topicAdherenceScore` field
-- **Display**: Shown in `DeviceDetails.tsx` with speaker analytics cards
-- **Alerts**: Broadcast via WebSocket when thresholds are exceeded
+- **Flag Display**: All 4 flag types shown with color-coded badges in:
+  - Dashboard device cards
+  - Live recording panel
+  - Transcript segments
+  - Device details view
+- **Real-Time Alerts**: WebSocket broadcasts for profanity and language policy violations
+- **Cache Invalidation**: Dashboard cache invalidated when transcripts are created/updated for real-time updates
 
-## Next Steps
+## Token Processing and Segment Accumulation
 
-1. ✅ Basic implementation (DONE)
-2. ⏳ Make topic keywords configurable
-3. ⏳ Add topic prompt field to schema
-4. ⏳ Improve topic detection algorithm
-5. ⏳ Add visualization components
-6. ⏳ Add real-time metrics dashboard
+### Progressive Segment Saving
+- Segments are saved incrementally during live recording
+- When the same speaker continues, the last segment is **updated** (not duplicated)
+- This prevents transcript fragmentation and ensures complete sentences
+- Implementation: `server/storage.ts::appendSegments()` with `updateLastIfSameSpeaker` logic
 
+### Token Deduplication
+- Final tokens are deduplicated using a Set with key: `${startMs}_${endMs}_${speaker}_${text}`
+- Tokens are sorted chronologically by `start_ms` then `end_ms`
+- Segments are created by grouping sequential tokens by speaker
+- Text is accumulated by concatenating `token.text` directly (Soniox handles spacing)

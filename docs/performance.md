@@ -85,7 +85,16 @@ We've implemented several optimizations to improve load time:
   - `transcripts.user_id`
   - `transcripts.created_at`
   - `flagged_content.transcript_id`
+  - `flagged_content.flag_type`
 - Removed expensive `COUNT(DISTINCT)` operations
+- Activity tracking uses `GREATEST(MAX(created_at), MAX(updated_at))` for accurate last activity
+
+#### ✅ Cache Management
+- Server-side caching with automatic invalidation
+- Dashboard cache invalidated when transcripts are created/updated
+- Client-side React Query caching with 10-second stale time
+- Auto-refresh every 30 seconds for live dashboard updates
+- Cache invalidation on segment append and flag creation
 
 #### ✅ Resource Hints
 - DNS prefetch for Google Fonts
@@ -165,17 +174,6 @@ Investigate if you experience:
 - **Consistent slow database queries** (>1 second)
 - **Large bundle sizes** (>500KB gzipped for main bundle)
 - **Network timeouts** or failed chunk loads
-
-### Future Optimizations
-
-Potential improvements (not yet implemented):
-
-1. **Service Worker**: Cache static assets and chunks
-2. **HTTP/2 Server Push**: Push critical chunks proactively
-3. **Route Prefetching**: Prefetch likely next routes
-4. **Database Query Caching**: Cache dashboard overview results
-5. **CDN for Static Assets**: Serve chunks from edge locations
-6. **Bundle Analysis**: Further optimize chunk sizes
 
 ### Summary
 
