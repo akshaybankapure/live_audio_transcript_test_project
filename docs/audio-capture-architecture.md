@@ -1,4 +1,4 @@
-# Audio Capture Architecture - Phase 2 Implementation Plan
+# Audio Capture Architecture
 
 ## Overview
 This document outlines the architecture for capturing, storing, and serving audio snippets for flagged content and full session recordings in the Audio Transcript Viewer application.
@@ -17,7 +17,7 @@ This document outlines the architecture for capturing, storing, and serving audi
 - `snippetEndMs`: Nullable integer storing snippet end time in milliseconds
   - Example: `audio/snippets/user123/session456/snippet-12345.webm`
 
-### New Tables Required for Phase 2
+### New Tables Required
 
 #### Audio Chunks Table
 ```typescript
@@ -88,7 +88,7 @@ export const backgroundJobs = pgTable("background_jobs", {
 - Attempt 3: 25 seconds delay (retryAt = NOW() + 25s)
 - After 3 attempts: Marked as "failed"
 
-## Phase 2: Audio Capture Implementation
+## Audio Capture Implementation
 
 ### 1. Frontend: MediaRecorder Integration
 
@@ -519,48 +519,11 @@ The existing `objectStorage.ts` already handles local development:
 
 ### 7. Progressive Enhancement Strategy
 
-#### Minimum Viable Audio (MVA)
-- Phase 2.1: Full session recording only
-- Phase 2.2: Add snippet extraction
-- Phase 2.3: Add playback UI with seek
-- Phase 2.4: Add waveform visualization
-
 #### Graceful Degradation
 - Transcript functionality works without audio
 - Audio recording optional (can be disabled)
 - Browser compatibility detection
 - Fallback UI when audio unavailable
-
-## Implementation Checklist
-
-### Phase 2.1: Session Recording
-- [ ] Add MediaRecorder to LiveRecordingPanel
-- [ ] Implement chunked upload (10-15s)
-- [ ] Create chunk upload endpoint
-- [ ] Build chunk concatenation service (ffmpeg)
-- [ ] Update transcript with audio path on completion
-- [ ] Test: Record session → verify audio stored
-
-### Phase 2.2: Snippet Extraction
-- [ ] Create background job system
-- [ ] Implement snippet extraction service (ffmpeg)
-- [ ] Queue snippet jobs when flagged content created
-- [ ] Update flagged_content with snippet metadata
-- [ ] Test: Create flag → verify snippet extracted
-
-### Phase 2.3: Playback UI
-- [ ] Add audio player to Sessions tab
-- [ ] Add audio player to Flags tab
-- [ ] Implement presigned URL fetching
-- [ ] Add playback controls (play/pause/seek)
-- [ ] Test: Playback in both locations
-
-### Phase 2.4: Advanced Features
-- [ ] Waveform visualization
-- [ ] Transcript-audio sync (click segment → jump to time)
-- [ ] Speed controls (0.5x, 1x, 1.5x, 2x)
-- [ ] Download audio option
-- [ ] Test: All advanced features
 
 ## Technical Dependencies
 
@@ -624,21 +587,3 @@ The existing `objectStorage.ts` already handles local development:
 - Audio capture opt-in with feature flag
 - Graceful handling of missing audio files
 
-## Future Enhancements
-
-### Advanced Audio Features
-- Speaker identification via audio analysis
-- Noise reduction / enhancement
-- Multi-track recording for multi-speaker scenarios
-- Real-time audio level monitoring
-
-### Analytics
-- Audio quality metrics
-- Storage usage dashboard
-- Playback statistics
-- User engagement with audio features
-
-### Export Options
-- Download session audio with timestamps
-- Export with embedded transcript (subtitle format)
-- Share audio clips with timestamp links
