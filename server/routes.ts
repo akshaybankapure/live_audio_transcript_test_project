@@ -1,6 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
+import { transcripts } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import { setupAuth, isAuthenticated } from "./auth";
 import {
   ObjectStorageService,
@@ -15,6 +18,7 @@ import multer from "multer";
 import fs from "fs";
 import crypto from "crypto";
 import { buildUserScopedKey, serverCache, setPrivateCacheHeaders } from "./cache";
+import { log } from "./vite";
 
 const upload = multer({ dest: "uploads/" });
 
@@ -53,9 +57,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // If not, create new device
       if (!user) {
         user = await storage.allocateDevice(hashedDeviceId);
-        console.log(`[DeviceAuth] Created new device: ${user.displayName}`);
+        log(`Created new device: ${user.displayName}`, "DeviceAuth");
       } else {
-        console.log(`[DeviceAuth] Existing device: ${user.displayName}`);
+        log(`Existing device: ${user.displayName}`, "DeviceAuth");
       }
 
       // Store device user in session
@@ -65,6 +69,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error("Error saving session:", err);
           return res.status(500).json({ error: "Failed to save session" });
         }
+        log(`Session saved for user ${user.id}, session ID: ${req.sessionID}`, "DeviceAuth");
         res.json(user);
       });
     } catch (error) {
@@ -95,7 +100,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error("Error saving session:", err);
           return res.status(500).json({ error: "Failed to save session" });
         }
-        console.log(`[AdminAuth] Admin logged in: ${adminUser.displayName}`);
+        log(`Admin logged in: ${adminUser.displayName}`, "AdminAuth");
         res.json(adminUser);
       });
     } catch (error) {
@@ -154,7 +159,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const data = await response.json();
-      console.log(`[TempKey] Created temporary API key, expires at: ${data.expires_at}`);
+      log(`Created temporary API key, expires at: ${data.expires_at}`, "TempKey");
       res.json({ apiKey: data.api_key });
     } catch (error) {
       console.error("Error getting temporary API key:", error);
@@ -251,7 +256,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      console.log(`[Live Recording] Saved with ID: ${savedTranscript.id}, ${profanityDetection.flaggedItems.length} flagged items`);
+      log(`Live Recording saved with ID: ${savedTranscript.id}, ${profanityDetection.flaggedItems.length} flagged items`, "LiveRecording");
 
       res.json({
         ...savedTranscript,
@@ -281,7 +286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         participationConfig: participationConfig || null,
       });
 
-      console.log(`[Draft Transcript] Created ID: ${transcript.id}`);
+      log(`Draft Transcript created ID: ${transcript.id}`, "DraftTranscript");
       res.json(transcript);
     } catch (error) {
       console.error("Error creating draft transcript:", error);
@@ -335,21 +340,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let totalNewFlags = 0;
       let profanityCount = 0;
       let languagePolicyCount = 0;
-      let offTopicCount = 0;
       const deviceUser = await storage.getUser(userId);
 
-      // Process each new segment individually
-      // Pass all segments for participation analysis
+      // Collect all flags first (batch processing for performance)
+      const allProfanityFlags: any[] = [];
+      const allLanguageFlags: any[] = [];
+      
+      // Process each new segment individually for REAL-TIME flagging only
+      // NOTE: Only profanity and language policy are flagged in real-time
+      // Topic adherence and participation are analyzed only at session end
       for (const segment of recentSegments) {
-        const analysis = analyzeSegment(segment, id, allowedLanguage, allSegments, topicConfig, participationConfig);
+        const analysis = analyzeSegment(segment, id, allowedLanguage);
 
-        // Handle profanity flags (separate flag type)
+        // Collect profanity flags (batch insert later)
         for (const flagged of analysis.profanity) {
-          await storage.createFlaggedContent(flagged);
+          allProfanityFlags.push(flagged);
           totalNewFlags++;
           profanityCount++;
           
-          // Broadcast real-time alert
+          // Broadcast real-time alert immediately (non-blocking)
           websocketService.broadcastAlert({
             type: 'PROFANITY_ALERT',
             deviceId: userId,
@@ -363,13 +372,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
 
-        // Handle language policy violations (separate flag type)
+        // Collect language policy violations (batch insert later)
         for (const violation of analysis.languagePolicy) {
-          await storage.createFlaggedContent(violation);
+          allLanguageFlags.push(violation);
           totalNewFlags++;
           languagePolicyCount++;
           
-          // Broadcast real-time alert
+          // Broadcast real-time alert immediately (non-blocking)
           websocketService.broadcastAlert({
             type: 'LANGUAGE_POLICY_ALERT',
             deviceId: userId,
@@ -383,64 +392,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
 
-        // Handle off-topic flags (separate flag type)
-        for (const offTopic of analysis.offTopic) {
-          await storage.createFlaggedContent(offTopic);
-          totalNewFlags++;
-          offTopicCount++;
-          
-          // Broadcast real-time alert
-          websocketService.broadcastAlert({
-            type: 'TOPIC_ADHERENCE_ALERT',
-            deviceId: userId,
-            deviceName: deviceUser?.displayName || 'Unknown Group',
-            transcriptId: id,
-            flaggedWord: offTopic.flaggedWord,
-            timestampMs: offTopic.timestampMs,
-            speaker: offTopic.speaker || 'Unknown',
-            context: offTopic.context || '',
-            flagType: 'off_topic',
-          });
-        }
-
-        // Handle participation flags (separate flag type)
-        for (const participation of analysis.participation) {
-          await storage.createFlaggedContent(participation);
-          totalNewFlags++;
-          
-          // Broadcast real-time alert
-          websocketService.broadcastAlert({
-            type: 'PARTICIPATION_ALERT',
-            deviceId: userId,
-            deviceName: deviceUser?.displayName || 'Unknown Group',
-            transcriptId: id,
-            flaggedWord: participation.flaggedWord,
-            timestampMs: participation.timestampMs,
-            speaker: participation.speaker || 'Unknown',
-            context: participation.context || '',
-            flagType: 'participation',
-          });
-        }
+        // Topic adherence and participation are NOT analyzed in real-time
+        // They require full conversation context and are analyzed only when session is completed
       }
 
-      // Update counts
+      // Batch insert all flagged content in parallel (much faster than sequential)
+      const flagInsertPromises: Promise<any>[] = [];
+      for (const flagged of [...allProfanityFlags, ...allLanguageFlags]) {
+        flagInsertPromises.push(storage.createFlaggedContent(flagged));
+      }
+      
+      // Update counts in parallel with flag inserts
+      const updatePromises: Promise<any>[] = [];
       if (profanityCount > 0) {
-        await storage.updateProfanityCount(id, profanityCount);
+        updatePromises.push(storage.updateProfanityCount(id, profanityCount));
       }
       if (languagePolicyCount > 0) {
-        await storage.updateLanguagePolicyViolations(id, languagePolicyCount);
+        updatePromises.push(storage.updateLanguagePolicyViolations(id, languagePolicyCount));
       }
+      
+      // Wait for all database operations in parallel
+      await Promise.all([...flagInsertPromises, ...updatePromises]);
 
-      console.log(`[Append Segments] Transcript ${id}: appended ${newSegments.length} segments, ${totalNewFlags} new flags (${profanityCount} profanity, ${languagePolicyCount} language, ${offTopicCount} off-topic)`);
+      log(`Transcript ${id}: appended ${newSegments.length} segments, ${totalNewFlags} new flags (${profanityCount} profanity, ${languagePolicyCount} language). Topic adherence and participation will be analyzed at session end.`, "AppendSegments");
 
-      // Return updated transcript with current counts
-      const final = await storage.getTranscript(id);
+      // Invalidate dashboard cache when segments are appended (so draft transcripts show up)
+      // Invalidate both user-scoped and device-scoped cache keys
+      serverCache.invalidatePrefix(`user:${userId}|path:/api/dashboard`);
+      serverCache.invalidatePrefix(`device:${userId}|path:/api/dashboard`);
+      // Also invalidate the specific device dashboard cache
+      serverCache.invalidate(`device:${userId}|path:/api/dashboard/device`);
+      log(`Invalidated device dashboard cache for user ${userId} after appending segments`, "AppendSegments");
+
+      // Return updated transcript directly (no need to fetch again)
       res.json({
-        ...final,
-        newFlaggedItems: recentSegments.flatMap(segment => {
-          const analysis = analyzeSegment(segment, id, allowedLanguage, allSegments, topicConfig, participationConfig);
-          return [...analysis.profanity, ...analysis.languagePolicy, ...analysis.offTopic, ...analysis.participation];
-        }),
+        ...updated,
+        newFlaggedItems: [...allProfanityFlags, ...allLanguageFlags],
       });
     } catch (error) {
       console.error("Error appending segments:", error);
@@ -507,11 +494,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Progressive saving: Mark transcript as complete
-  app.patch("/api/transcripts/:id/complete", isAuthenticated, async (req: any, res) => {
+  // Quick report endpoint for frontend profanity detection
+  app.post("/api/transcripts/:id/quick-report", isAuthenticated, async (req: any, res) => {
     try {
       const { id } = req.params;
-      const { duration, audioFileUrl } = req.body;
+      const { segments } = req.body;
       const userId = req.user.claims.sub;
 
       // Verify user owns this transcript
@@ -523,9 +510,109 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Run comprehensive analysis on complete transcript
-      const segments = existing.segments as any[];
-      if (segments.length > 0) {
+      if (!segments || !Array.isArray(segments)) {
+        return res.status(400).json({ error: "segments array is required" });
+      }
+
+      // Create flags for profanity detected in frontend
+      let reportedCount = 0;
+      for (const segment of segments) {
+        // Use server-side profanity detection to create proper flags
+        const profanityResult = detectProfanity([{
+          text: segment.text,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          speaker: segment.speaker,
+        }], id);
+        
+        for (const flagged of profanityResult.flaggedItems) {
+          await storage.createFlaggedContent(flagged);
+          reportedCount++;
+        }
+      }
+
+      // Update profanity count
+      if (reportedCount > 0) {
+        await storage.updateProfanityCount(id, reportedCount);
+      }
+
+      res.json({ reported: reportedCount });
+    } catch (error) {
+      console.error("Error in quick report:", error);
+      res.status(500).json({ error: "Failed to report profanity" });
+    }
+  });
+
+  // Progressive saving: Mark transcript as complete
+  app.patch("/api/transcripts/:id/complete", isAuthenticated, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { duration, audioFileUrl, sonioxTranscriptionId } = req.body;
+      const userId = req.user.claims.sub;
+
+      // Verify user owns this transcript
+      const existing = await storage.getTranscript(id);
+      if (!existing) {
+        return res.status(404).json({ error: "Transcript not found" });
+      }
+      if (existing.userId !== userId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      let fetchedFromSoniox = false;
+      let finalSegments = existing.segments as any[];
+
+      // If Soniox transcription ID is provided, fetch the final transcript from Soniox
+      // This replaces our accumulated segments with Soniox's accurate final transcript
+      if (sonioxTranscriptionId && SONIOX_API_KEY) {
+        try {
+          log(`Fetching final transcript from Soniox for transcription ID: ${sonioxTranscriptionId}`, "Complete Transcript");
+          
+          // Wait a bit for Soniox to finalize the transcript
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          const transcriptResponse = await fetch(
+            `https://api.soniox.com/v1/transcriptions/${sonioxTranscriptionId}/transcript`,
+            {
+              headers: {
+                Authorization: `Bearer ${SONIOX_API_KEY}`,
+              },
+            }
+          );
+
+          if (transcriptResponse.ok) {
+            const transcriptData = await transcriptResponse.json();
+            
+            // Parse Soniox's final transcript (more accurate than our accumulated segments)
+            finalSegments = parseTranscript(transcriptData);
+            const languages = extractLanguages(transcriptData);
+            const finalDuration = calculateDuration(transcriptData);
+            
+            // Update transcript with Soniox's final segments and store Soniox job ID
+            await db
+              .update(transcripts)
+              .set({
+                segments: finalSegments as any,
+                sonioxJobId: sonioxTranscriptionId,
+                language: languages[0] || existing.language,
+                duration: finalDuration || duration,
+                updatedAt: new Date(),
+              })
+              .where(eq(transcripts.id, id));
+            
+            fetchedFromSoniox = true;
+            log(`Replaced transcript segments with Soniox final transcript: ${finalSegments.length} segments`, "Complete Transcript");
+          } else {
+            log(`Failed to fetch Soniox transcript: ${transcriptResponse.status}`, "Complete Transcript");
+          }
+        } catch (error) {
+          console.error("Error fetching Soniox final transcript:", error);
+          log(`Error fetching Soniox final transcript, using accumulated segments`, "Complete Transcript");
+        }
+      }
+
+      // Run comprehensive analysis on complete transcript (using final segments from Soniox if fetched)
+      if (finalSegments.length > 0) {
         // Get topic and participation configs from transcript
         const topicConfig = existing.topicKeywords || existing.topicPrompt ? {
           topicKeywords: existing.topicKeywords as string[] | undefined,
@@ -535,24 +622,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const participationConfig = existing.participationConfig as { dominanceThreshold?: number; silenceThreshold?: number } | undefined;
         
         const analysis = await analyzeContent(
-          segments, 
+          finalSegments, 
           id, 
           process.env.ALLOWED_LANGUAGE || 'en',
           topicConfig,
           participationConfig
         );
         
-        // Save all flagged content (including off-topic segments)
+        // Clean up old participation flags that were created during live recording
+        // These are duplicates and will be replaced with proper flags from end-of-session analysis
+        const deletedCount = await storage.deleteParticipationFlags(id);
+        if (deletedCount > 0) {
+          console.log(`[Complete Transcript] ID: ${id}: Cleaned up ${deletedCount} old participation flags`);
+        }
+
+        // Save all flagged content from comprehensive analysis
+        // This includes off-topic segments and participation flags created at session end
         for (const flagged of analysis.allFlaggedItems) {
           await storage.createFlaggedContent(flagged);
         }
 
-        // Update participation balance and topic adherence
+        // Update participation balance and topic adherence (calculated at session end)
         await storage.updateParticipationBalance(id, analysis.participation);
         await storage.updateTopicAdherence(id, analysis.topicAdherence.score);
 
-        // Broadcast participation/topic alerts if needed (non-real-time signals)
+        // Broadcast participation/topic alerts if needed (non-real-time signals, only at session end)
         const deviceUser = await storage.getUser(userId);
+        
+        // Broadcast participation imbalance alert if detected
         if (!analysis.participation.isBalanced) {
           websocketService.broadcastAlert({
             type: 'PARTICIPATION_ALERT',
@@ -567,6 +664,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         }
 
+        // Broadcast topic adherence alert if score is low
         if (analysis.topicAdherence.score < 0.7) {
           websocketService.broadcastAlert({
             type: 'TOPIC_ADHERENCE_ALERT',
@@ -580,6 +678,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             flagType: 'off_topic',
           });
         }
+        
+        console.log(`[Complete Transcript] ID: ${id}: Final analysis - ${analysis.allFlaggedItems.length} total flags, participation balanced: ${analysis.participation.isBalanced}, topic adherence: ${(analysis.topicAdherence.score * 100).toFixed(0)}%`);
 
         // Log quality metrics
         await qualityLogger.logQualityMetric(id, 'final_analysis', {
@@ -592,7 +692,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Run quality validation tests
         const { runAllQualityTests } = await import("./qualityTests");
         await runAllQualityTests(
-          segments,
+          finalSegments,
           id,
           analysis.allFlaggedItems,
           duration || 0,
@@ -600,10 +700,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
       }
 
-      const updated = await storage.completeTranscript(id, { duration, audioFileUrl });
-      console.log(`[Complete Transcript] ID: ${id}, status: complete`);
+      // Update transcript status and duration (if not already updated by Soniox fetch)
+      let updated: Transcript;
+      if (!fetchedFromSoniox) {
+        updated = await storage.completeTranscript(id, { duration, audioFileUrl });
+        console.log(`[Complete Transcript] ID: ${id}, status: complete`);
+      } else {
+        // Transcript was already updated with Soniox data, just mark as complete
+        updated = await storage.completeTranscript(id, { duration: duration || existing.duration, audioFileUrl });
+        console.log(`[Complete Transcript] ID: ${id}, status: complete (using Soniox final transcript)`);
+      }
 
-      res.json(updated);
+      // Invalidate dashboard cache for this user to ensure new transcript appears immediately
+      const cacheKeysToInvalidate = [
+        buildUserScopedKey(userId, '/api/dashboard/overview'),
+        `device:${userId}|path:/api/dashboard/device`,
+      ];
+      
+      // Invalidate all time range variations
+      const timeRanges = ['live', '1h', '12h', 'today', 'all'];
+      for (const timeRange of timeRanges) {
+        cacheKeysToInvalidate.push(
+          buildUserScopedKey(userId, '/api/dashboard/overview', { timeRange })
+        );
+      }
+      
+      for (const key of cacheKeysToInvalidate) {
+        serverCache.invalidate(key);
+      }
+      
+      // Also invalidate by prefix to catch any variations
+      serverCache.invalidatePrefix(`user:${userId}|path:/api/dashboard`);
+      serverCache.invalidatePrefix(`device:${userId}|path:/api/dashboard`);
+      
+      log(`Invalidated dashboard cache for user ${userId} after completing transcript ${id}`, "Complete Transcript");
+
+      res.json({ ...updated, fetchedFromSoniox, segmentCount: finalSegments.length });
     } catch (error) {
       console.error("Error completing transcript:", error);
       res.status(500).json({ error: "Failed to complete transcript" });
@@ -695,17 +827,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/dashboard/device/:deviceId", isAuthenticated, async (req: any, res) => {
     try {
       const { deviceId } = req.params;
+      const { refreshFromSoniox } = req.query; // Optional: force refresh from Soniox
       const cacheKey = `device:${deviceId}|path:/api/dashboard/device`;
-      const cached = serverCache.get<any>(cacheKey);
-      if (cached) {
-        setPrivateCacheHeaders(res, 60, 120);
-        return res.json(cached);
+      
+      // If not forcing refresh, check cache
+      if (!refreshFromSoniox) {
+        const cached = serverCache.get<any>(cacheKey);
+        if (cached) {
+          setPrivateCacheHeaders(res, 60, 120);
+          return res.json(cached);
+        }
       }
+      
       const deviceData = await storage.getDeviceDashboard(deviceId);
       
       if (!deviceData) {
         return res.status(404).json({ error: "Device not found" });
       }
+
+      // For each session with a Soniox job ID, fetch the full transcript if needed
+      if (SONIOX_API_KEY) {
+        for (const session of deviceData.sessions) {
+          if (session.sonioxJobId) {
+            const segments = Array.isArray(session.segments) ? session.segments : (typeof session.segments === 'string' ? JSON.parse(session.segments || '[]') : []);
+            
+            // Check if segments seem incomplete:
+            // 1. No segments at all
+            // 2. Segments with very short text (likely incomplete)
+            // 3. Total text length is suspiciously short for the duration
+            // 4. For completed sessions, always prefer Soniox's final transcript
+            const totalTextLength = segments.reduce((sum: number, seg: any) => sum + (seg.text?.length || 0), 0);
+            const durationMinutes = session.duration ? session.duration / 60 : 0;
+            const expectedMinTextLength = durationMinutes * 50; // Rough estimate: ~50 chars per minute of speech
+            
+            const hasIncompleteSegments = segments.length === 0 || 
+              segments.some((seg: any) => !seg.text || seg.text.trim().length < 10) ||
+              (durationMinutes > 1 && totalTextLength < expectedMinTextLength * 0.3); // Less than 30% of expected text
+            
+            // Fetch from Soniox if:
+            // 1. User explicitly requested refresh
+            // 2. Segments seem incomplete (empty, very short, or suspiciously short for duration)
+            const shouldFetch = refreshFromSoniox || hasIncompleteSegments;
+            
+            if (shouldFetch) {
+              try {
+                log(`Fetching full transcript from Soniox for session ${session.id} (Soniox ID: ${session.sonioxJobId})`, "DeviceDashboard");
+                
+                const transcriptResponse = await fetch(
+                  `https://api.soniox.com/v1/transcriptions/${session.sonioxJobId}/transcript`,
+                  {
+                    headers: {
+                      Authorization: `Bearer ${SONIOX_API_KEY}`,
+                    },
+                  }
+                );
+
+                if (transcriptResponse.ok) {
+                  const transcriptData = await transcriptResponse.json();
+                  const fullSegments = parseTranscript(transcriptData);
+                  
+                  // Update the session's segments with full transcript
+                  session.segments = fullSegments;
+                  
+                  // Also update in database for future requests
+                  await db
+                    .update(transcripts)
+                    .set({
+                      segments: fullSegments as any,
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(transcripts.id, session.id));
+                  
+                  log(`Updated session ${session.id} with full Soniox transcript: ${fullSegments.length} segments`, "DeviceDashboard");
+                }
+              } catch (error) {
+                console.error(`Error fetching Soniox transcript for session ${session.id}:`, error);
+                // Continue with existing segments if fetch fails
+              }
+            }
+          }
+        }
+      }
+
+      log(`Device dashboard for ${deviceId}: ${deviceData.sessions.length} sessions (draft: ${deviceData.sessions.filter(s => s.status === 'draft').length}, complete: ${deviceData.sessions.filter(s => s.status === 'complete').length})`, "DeviceDashboard");
 
       setPrivateCacheHeaders(res, 60, 120);
       serverCache.set(cacheKey, deviceData, 60_000);
@@ -1043,21 +1247,22 @@ function parseTranscript(transcriptData: any) {
         segments.push(currentSegment);
       }
 
-      // Start new segment
+      // Start new segment - ensure we use currentText which accumulates properly
       currentSpeaker = speakerLabel;
-      currentText = text;
+      currentText = text || "";
       currentStartTime = startMs / 1000;
       currentLanguage = language;
       currentSegment = {
         speaker: speakerLabel,
-        text: text,
+        text: currentText, // Use currentText instead of just text
         startTime: startMs / 1000,
         endTime: endMs / 1000,
         language: getLanguageName(language),
       };
     } else {
-      // Continue current segment - tokens already include spaces
-      currentText += text;
+      // Continue current segment - tokens may or may not include spaces, so add text directly
+      // Soniox tokens typically include leading spaces when needed
+      currentText += text || "";
       currentSegment.text = currentText;
       currentSegment.endTime = endMs / 1000;
     }

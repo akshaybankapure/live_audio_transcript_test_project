@@ -18,6 +18,7 @@ import type { TranscriptSegment as TranscriptSegmentType } from "@shared/schema"
 import TranscriptSegment from "./TranscriptSegment";
 import { useToast } from "@/hooks/use-toast";
 import { getSpeakerColor } from "@/lib/transcripts";
+import { hasProfanity } from "@/lib/profanityDetector";
 
 interface LiveRecordingPanelProps {
   selectedLanguage: string;
@@ -50,6 +51,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
   const segmentsRef = useRef<TranscriptSegmentType[]>([]); // Store current segments for callbacks
   const cleanupTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Store cleanup timeout ID
   const transcriptIdRef = useRef<string | null>(null); // Store draft transcript ID
+  const sonioxTranscriptionIdRef = useRef<string | null>(null); // Store Soniox transcription ID for final fetch
   const lastSentIdxRef = useRef<number>(0); // Track which segments have been sent
   const savePromiseRef = useRef<Promise<void> | null>(null); // Track in-flight save operations
   const lastAppendTimeRef = useRef<number>(0); // Track last append time for batching
@@ -93,19 +95,20 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
           newSegments.push(currentSegment);
         }
 
-        // Start new segment
+        // Start new segment - ensure we use currentText which accumulates properly
         currentSpeaker = speakerLabel;
-        currentText = token.text;
+        currentText = token.text || "";
         currentSegment = {
           speaker: speakerLabel,
-          text: token.text,
+          text: currentText, // Use currentText instead of just token.text
           startTime: (token.start_ms || 0) / 1000,
           endTime: (token.end_ms || 0) / 1000,
           language: token.language || "en",
         };
       } else {
-        // Continue current segment
-        currentText += token.text;
+        // Continue current segment - tokens may or may not include spaces, so add text directly
+        // Soniox tokens typically include leading spaces when needed
+        currentText += token.text || "";
         if (currentSegment) {
           currentSegment.text = currentText;
           currentSegment.endTime = (token.end_ms || 0) / 1000;
@@ -248,6 +251,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
     try {
       const currentSegments = segmentsRef.current;
       const duration = currentSegments[currentSegments.length - 1]?.endTime || 0;
+      const sonioxTranscriptionId = sonioxTranscriptionIdRef.current;
 
       const response = await fetch(`/api/transcripts/${transcriptId}/complete`, {
         method: "PATCH",
@@ -256,6 +260,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
         },
         body: JSON.stringify({
           duration,
+          sonioxTranscriptionId, // Send Soniox transcription ID to fetch final transcript
         }),
       });
 
@@ -263,11 +268,15 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
         throw new Error("Failed to complete transcript");
       }
 
+      const result = await response.json();
+      
       toast({
         title: "Recording saved",
-        description: profanityCount > 0 
-          ? `Saved with ${profanityCount} flagged item(s)`
-          : "Transcript saved successfully",
+        description: result.fetchedFromSoniox 
+          ? "Final transcript fetched from Soniox and saved"
+          : profanityCount > 0 
+            ? `Saved with ${profanityCount} flagged item(s)`
+            : "Transcript saved successfully",
       });
     } catch (error) {
       console.error("Failed to complete transcript:", error);
@@ -393,6 +402,24 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
               .filter(t => t.is_final)
               .sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
             const newSegments = processTokensIntoSegments(finalTokens);
+            
+            // Check for profanity in new segments and show alert
+            const previousSegmentCount = segmentsRef.current.length;
+            for (let i = previousSegmentCount; i < newSegments.length; i++) {
+              const segment = newSegments[i];
+              if (segment.text && hasProfanity(segment.text)) {
+                // Show red alert toast in top right corner
+                toast({
+                  title: "Profanity Detected",
+                  description: "Alert sent to teacher",
+                  variant: "destructive",
+                  duration: 5000, // Show for 5 seconds
+                });
+                // Only show one alert per batch to avoid spam
+                break;
+              }
+            }
+            
             segmentsRef.current = newSegments; // Keep ref in sync
             setSegments(newSegments);
 
@@ -420,24 +447,30 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
           }
         },
 
-        onFinished: async () => {
-          console.log("Recording finished");
+        onFinished: async (result?: any) => {
+          console.log("Recording finished", result);
           setIsRecording(false);
           setCurrentNonFinalTokens([]);
           
+          // Store Soniox transcription ID if available
+          if (result?.transcription_id) {
+            sonioxTranscriptionIdRef.current = result.transcription_id;
+            console.log("Soniox transcription ID:", result.transcription_id);
+          }
+          
           // Progressive save: Send any remaining unsent segments and mark complete
-          if (transcriptIdRef.current && segmentsRef.current.length > 0) {
+          if (transcriptIdRef.current) {
             // Wait for any in-flight save to complete
             if (savePromiseRef.current) {
               await savePromiseRef.current;
             }
 
-            // Send remaining segments
+            // Send remaining segments (if any)
             if (segmentsRef.current.length > lastSentIdxRef.current) {
               await appendSegments();
             }
 
-            // Mark transcript as complete
+            // Mark transcript as complete and fetch final transcript from Soniox
             await completeTranscript();
 
             // Clear local state after delay
@@ -446,6 +479,7 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
               segmentsRef.current = [];
               tokenMapRef.current.clear();
               transcriptIdRef.current = null;
+              sonioxTranscriptionIdRef.current = null;
               lastSentIdxRef.current = 0;
               setProfanityCount(0);
               setSaveStatus('idle');

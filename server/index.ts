@@ -35,11 +35,19 @@ const app = express();
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "";
 
-if (ALLOWED_ORIGIN) {
-  const allowedOrigins = ALLOWED_ORIGIN.split(',').map(origin => origin.trim());
+// In development, always enable CORS for localhost to allow cookies to work
+// In production, only enable if ALLOWED_ORIGIN is set
+if (app.get("env") === "development" || ALLOWED_ORIGIN) {
+  const allowedOrigins = ALLOWED_ORIGIN 
+    ? ALLOWED_ORIGIN.split(',').map(origin => origin.trim())
+    : ['http://localhost:5000', 'http://localhost:5001', 'http://localhost:5173', 'http://127.0.0.1:5000', 'http://127.0.0.1:5001', 'http://127.0.0.1:5173'];
   
   app.use(cors({
     origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, Postman, etc.) in development
+      if (app.get("env") === "development" && !origin) {
+        return callback(null, true);
+      }
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -92,10 +100,7 @@ app.use((req, res, next) => {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
+      // Don't truncate log lines - show full information for debugging
       log(logLine);
     }
   });

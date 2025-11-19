@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -64,8 +64,10 @@ interface Alert {
 export default function Dashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [acknowledgedAlerts, setAcknowledgedAlerts] = useState<Set<string>>(new Set());
   
   // Filter state - default to 'live'
   const [timeRange, setTimeRange] = useState<'live' | 'all' | 'custom' | 'session' | '1h' | '12h' | 'today'>('live');
@@ -99,77 +101,99 @@ export default function Dashboard() {
     queryParams.set('transcriptId', transcriptId);
   }
 
-  // Use placeholderData to show cached data immediately while fetching fresh data
+  // Use cached data immediately - only refetch if stale
   const { data, isLoading, isFetching } = useQuery<DashboardOverviewResponse>({
     queryKey: [`/api/dashboard/overview?${queryParams.toString()}`],
     placeholderData: (previousData) => previousData,
-    refetchOnMount: true,
+    refetchOnMount: false, // Use cached data if available - don't refetch on every mount
+    staleTime: 30 * 60 * 1000, // 30 minutes - data stays fresh
     // Only fetch once we know the auth state; prevents initial 401 error path
     enabled: user !== undefined && user !== null,
   });
 
   // WebSocket connection for real-time alerts (all authenticated users)
   useEffect(() => {
-    if (!user) return; // Only connect if authenticated
+    if (!user) {
+      setIsConnected(false);
+      return; // Only connect if authenticated
+    }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/monitor`);
+    // Small delay to ensure session cookie is available after authentication
+    let ws: WebSocket | null = null;
+    const connectTimeout = setTimeout(() => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws/monitor`);
 
-    ws.onopen = () => {
-      console.log('[Dashboard] WebSocket connected');
-      setIsConnected(true);
-    };
+      ws.onopen = () => {
+        console.log('[Dashboard] WebSocket connected');
+        setIsConnected(true);
+      };
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'CONNECTED') {
-          console.log('[Dashboard] Connected:', data.message);
-          return;
-        }
-
-        // Handle all alert types
-        if (['PROFANITY_ALERT', 'LANGUAGE_POLICY_ALERT', 'TOPIC_ADHERENCE_ALERT', 'PARTICIPATION_ALERT'].includes(data.type)) {
-          const alert: Alert = {
-            ...data,
-            timestamp: new Date().toISOString(),
-          };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
           
-          setAlerts((prev) => [alert, ...prev].slice(0, 100)); // Keep last 100 alerts
-
-          // Show toast notification for high-priority alerts only
-          if (data.type === 'PROFANITY_ALERT' || data.type === 'LANGUAGE_POLICY_ALERT') {
-            toast({
-              title: data.type === 'PROFANITY_ALERT' ? 'Profanity Detected' : 'Language Policy Violation',
-              description: `${data.deviceName} - "${data.flaggedWord}" by ${data.speaker}`,
-              variant: 'destructive',
-            });
+          if (data.type === 'CONNECTED') {
+            console.log('[Dashboard] Connected:', data.message);
+            return;
           }
-        }
-      } catch (error) {
-        console.error('[Dashboard] Parse error:', error);
-      }
-    };
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      // Reconnect after 3 seconds if connection lost
-      setTimeout(() => {
-        if (user) {
-          // Will reconnect via useEffect
-        }
-      }, 3000);
-    };
+          // Handle all alert types
+          if (['PROFANITY_ALERT', 'LANGUAGE_POLICY_ALERT', 'TOPIC_ADHERENCE_ALERT', 'PARTICIPATION_ALERT'].includes(data.type)) {
+            const alert: Alert = {
+              ...data,
+              timestamp: new Date().toISOString(),
+            };
+            
+            setAlerts((prev) => [alert, ...prev].slice(0, 100)); // Keep last 100 alerts
 
-    ws.onerror = () => {
-      setIsConnected(false);
-    };
+            // Invalidate and refetch dashboard overview to update device stats in real-time
+            // This makes the dashboard truly live and actionable
+            queryClient.invalidateQueries({
+              queryKey: ['/api/dashboard/overview'],
+            });
+
+            // Show toast notification for high-priority alerts only
+            if (data.type === 'PROFANITY_ALERT' || data.type === 'LANGUAGE_POLICY_ALERT') {
+              toast({
+                title: data.type === 'PROFANITY_ALERT' ? 'Profanity Detected' : 'Language Policy Violation',
+                description: `${data.deviceName} - "${data.flaggedWord}" by ${data.speaker}`,
+                variant: 'destructive',
+                action: {
+                  altText: 'View device',
+                  onClick: () => setLocation(`/dashboard/device/${data.deviceId}`),
+                },
+              });
+            }
+          }
+        } catch (error) {
+          console.error('[Dashboard] Parse error:', error);
+        }
+      };
+
+      ws.onclose = () => {
+        setIsConnected(false);
+        // Reconnect after 3 seconds if connection lost
+        setTimeout(() => {
+          if (user) {
+            // Will reconnect via useEffect
+          }
+        }, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('[Dashboard] WebSocket error:', error);
+        setIsConnected(false);
+      };
+    }, 100); // Small delay to ensure cookies are available
 
     return () => {
-      ws.close();
+      clearTimeout(connectTimeout);
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close();
+      }
     };
-  }, [user, toast]);
+  }, [user, toast, queryClient, setLocation]);
 
   const formatDate = (dateString: string | null | Date) => {
     if (!dateString) return 'Never';
@@ -694,13 +718,36 @@ export default function Dashboard() {
                     <span className="text-[10px] text-muted-foreground">Offline</span>
                   </div>
                 )}
-                {alerts.length > 0 && (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">
-                    {alerts.length}
+                {alerts.filter(a => !acknowledgedAlerts.has(`${a.deviceId}-${a.timestampMs}-${alerts.indexOf(a)}`)).length > 0 && (
+                  <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">
+                    {alerts.filter(a => !acknowledgedAlerts.has(`${a.deviceId}-${a.timestampMs}-${alerts.indexOf(a)}`)).length}
                   </Badge>
                 )}
               </div>
             </div>
+            {alerts.length > 0 && (
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px] px-2"
+                  onClick={() => {
+                    const allAlertIds = alerts.map((a, idx) => `${a.deviceId}-${a.timestampMs}-${idx}`);
+                    setAcknowledgedAlerts(new Set(allAlertIds));
+                  }}
+                >
+                  Dismiss All
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-[10px] px-2"
+                  onClick={() => setAcknowledgedAlerts(new Set())}
+                >
+                  Show All
+                </Button>
+              </div>
+            )}
           </div>
 
           <ScrollArea className="flex-1">
@@ -715,14 +762,26 @@ export default function Dashboard() {
                 </div>
               ) : (
                 alerts.map((alert, index) => {
+                  const alertId = `${alert.deviceId}-${alert.timestampMs}-${index}`;
+                  const isAcknowledged = acknowledgedAlerts.has(alertId);
+                  
+                  // Skip acknowledged alerts
+                  if (isAcknowledged) return null;
+                  
                   const config = getAlertConfig(alert.type);
                   const Icon = config.icon;
                   
                   return (
                     <Card
-                      key={`${alert.deviceId}-${alert.timestampMs}-${index}`}
-                      className={`p-2.5 cursor-pointer transition-all hover:shadow-sm border-l-2 ${config.borderColor} ${config.bgColor}`}
-                      onClick={() => setLocation(`/dashboard/device/${alert.deviceId}`)}
+                      key={alertId}
+                      className={`p-2.5 transition-all hover:shadow-sm border-l-2 ${config.borderColor} ${config.bgColor} ${
+                        isAcknowledged ? 'opacity-60' : 'cursor-pointer'
+                      }`}
+                      onClick={() => {
+                        if (!isAcknowledged) {
+                          setLocation(`/dashboard/device/${alert.deviceId}`);
+                        }
+                      }}
                     >
                       <div className="space-y-1.5">
                         <div className="flex items-start justify-between gap-2">
@@ -731,10 +790,29 @@ export default function Dashboard() {
                             <Badge variant={alert.type === 'PROFANITY_ALERT' ? 'destructive' : 'secondary'} className="text-[10px] px-1.5 py-0 h-4">
                               {config.title}
                             </Badge>
+                            {!isAcknowledged && (
+                              <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse flex-shrink-0" />
+                            )}
                           </div>
-                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                            {formatTimeAgo(alert.timestamp)}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                              {formatTimeAgo(alert.timestamp)}
+                            </span>
+                            {!isAcknowledged && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-5 w-5 p-0 hover:bg-muted"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAcknowledgedAlerts((prev) => new Set(prev).add(alertId));
+                                }}
+                                title="Dismiss alert"
+                              >
+                                <span className="text-[10px]">×</span>
+                              </Button>
+                            )}
+                          </div>
                         </div>
                         
                         <div>

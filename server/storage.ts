@@ -12,7 +12,7 @@ import {
   type InsertFlaggedContent,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql, like } from "drizzle-orm";
+import { eq, desc, sql, like, and } from "drizzle-orm";
 
 export interface DeviceOverview {
   userId: string;
@@ -63,6 +63,7 @@ export interface IStorage {
   createFlaggedContent(flagged: InsertFlaggedContent): Promise<FlaggedContent>;
   getTranscriptFlaggedContent(transcriptId: string): Promise<FlaggedContent[]>;
   getUserFlaggedContent(userId: string): Promise<Array<FlaggedContent & { transcript: Transcript }>>;
+  deleteParticipationFlags(transcriptId: string): Promise<number>; // Returns count of deleted flags
   
   // Dashboard operations
   getDashboardOverview(): Promise<DeviceOverview[]>;
@@ -415,6 +416,34 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  async deleteParticipationFlags(transcriptId: string): Promise<number> {
+    // Delete all participation flags for this transcript
+    // This is used to clean up old duplicate flags before creating new ones at session end
+    
+    // First, count how many will be deleted
+    const countResult = await db.execute<{ count: string }>(sql`
+      SELECT COUNT(*)::text as count
+      FROM ${flaggedContent}
+      WHERE ${flaggedContent.transcriptId} = ${transcriptId} AND ${flaggedContent.flagType} = 'participation'
+    `);
+    
+    const count = parseInt(countResult.rows[0]?.count || '0', 10);
+    
+    if (count > 0) {
+      // Delete the flags
+      await db
+        .delete(flaggedContent)
+        .where(
+          and(
+            eq(flaggedContent.transcriptId, transcriptId),
+            eq(flaggedContent.flagType, 'participation')
+          )
+        );
+    }
+    
+    return count;
+  }
+
   // Dashboard operations
   async getDashboardOverview(options?: {
     timeRange?: 'live' | 'all' | 'custom' | '1h' | '12h' | 'today' | 'session';
@@ -473,7 +502,7 @@ export class DatabaseStorage implements IStorage {
           AVG(topic_adherence_score) as avg_topic_adherence,
           MAX(created_at) as last_activity
         FROM ${transcripts} t
-        WHERE status = 'complete' AND ${dateFilter} AND ${transcriptFilter}
+        WHERE (status = 'complete' OR status = 'draft') AND ${dateFilter} AND ${transcriptFilter}
         GROUP BY user_id
       ),
       flag_stats AS (
