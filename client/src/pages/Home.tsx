@@ -187,28 +187,14 @@ export default function Home() {
             </div>
           </TabsContent>
 
-          <TabsContent value="live" className="mt-6">
-            <div className="grid lg:grid-cols-[350px,1fr] gap-6">
-              <div className="space-y-6">
-                <div>
-                  <h2 className="text-sm font-medium mb-3">Live Recording</h2>
-                  <LanguageSelector
-                    value={selectedLanguage}
-                    onChange={setSelectedLanguage}
-                  />
-                </div>
+          <TabsContent value="live" className="mt-0 -mx-6 -mb-6">
+            <Suspense fallback={
+              <div className="flex items-center justify-center h-screen">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-
-              <div className="h-[calc(100vh-12rem)]">
-                <Suspense fallback={
-                  <div className="flex items-center justify-center h-full">
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  </div>
-                }>
-                  <LiveRecordingPanel selectedLanguage={selectedLanguage} />
-                </Suspense>
-              </div>
-            </div>
+            }>
+              <LiveRecordingPanel selectedLanguage={selectedLanguage} />
+            </Suspense>
           </TabsContent>
         </Tabs>
       </div>

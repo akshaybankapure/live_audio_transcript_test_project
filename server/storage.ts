@@ -64,6 +64,7 @@ export interface IStorage {
   getTranscriptFlaggedContent(transcriptId: string): Promise<FlaggedContent[]>;
   getUserFlaggedContent(userId: string): Promise<Array<FlaggedContent & { transcript: Transcript }>>;
   deleteParticipationFlags(transcriptId: string): Promise<number>; // Returns count of deleted flags
+  deleteAllFlags(transcriptId: string): Promise<number>; // Returns count of deleted flags (all types)
   
   // Dashboard operations
   getDashboardOverview(): Promise<DeviceOverview[]>;
@@ -439,6 +440,30 @@ export class DatabaseStorage implements IStorage {
             eq(flaggedContent.flagType, 'participation')
           )
         );
+    }
+    
+    return count;
+  }
+
+  async deleteAllFlags(transcriptId: string): Promise<number> {
+    // Delete ALL flags for this transcript (profanity, language, participation, off_topic)
+    // This is used when Soniox final transcript replaces accumulated segments
+    // to prevent duplicate flags and ensure flags match the final transcript
+    
+    // First, count how many will be deleted
+    const countResult = await db.execute<{ count: string }>(sql`
+      SELECT COUNT(*)::text as count
+      FROM ${flaggedContent}
+      WHERE ${flaggedContent.transcriptId} = ${transcriptId}
+    `);
+    
+    const count = parseInt(countResult.rows[0]?.count || '0', 10);
+    
+    if (count > 0) {
+      // Delete all flags
+      await db
+        .delete(flaggedContent)
+        .where(eq(flaggedContent.transcriptId, transcriptId));
     }
     
     return count;

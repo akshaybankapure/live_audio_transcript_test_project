@@ -416,13 +416,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       log(`Transcript ${id}: appended ${newSegments.length} segments, ${totalNewFlags} new flags (${profanityCount} profanity, ${languagePolicyCount} language). Topic adherence and participation will be analyzed at session end.`, "AppendSegments");
 
+      // Invalidate caches so flags appear immediately
+      // Invalidate transcript cache (includes flaggedContent)
+      serverCache.invalidate(`user:${userId}|path:/api/transcripts/${id}`);
       // Invalidate dashboard cache when segments are appended (so draft transcripts show up)
       // Invalidate both user-scoped and device-scoped cache keys
       serverCache.invalidatePrefix(`user:${userId}|path:/api/dashboard`);
       serverCache.invalidatePrefix(`device:${userId}|path:/api/dashboard`);
       // Also invalidate the specific device dashboard cache
       serverCache.invalidate(`device:${userId}|path:/api/dashboard/device`);
-      log(`Invalidated device dashboard cache for user ${userId} after appending segments`, "AppendSegments");
+      // Invalidate flagged content cache
+      serverCache.invalidate(`user:${userId}|path:/api/flagged-content`);
+      log(`Invalidated caches for user ${userId} after appending segments and flags`, "AppendSegments");
 
       // Return updated transcript directly (no need to fetch again)
       res.json({
@@ -602,6 +607,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             
             fetchedFromSoniox = true;
             log(`Replaced transcript segments with Soniox final transcript: ${finalSegments.length} segments`, "Complete Transcript");
+            
+            // When Soniox final transcript replaces accumulated segments, delete ALL old flags
+            // This prevents duplicates and ensures flags match the final transcript text/timestamps
+            const deletedFlagsCount = await storage.deleteAllFlags(id);
+            if (deletedFlagsCount > 0) {
+              log(`[Complete Transcript] ID: ${id}: Deleted ${deletedFlagsCount} old flags before recreating from final transcript`, "Complete Transcript");
+            }
           } else {
             log(`Failed to fetch Soniox transcript: ${transcriptResponse.status}`, "Complete Transcript");
           }
@@ -629,11 +641,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           participationConfig
         );
         
-        // Clean up old participation flags that were created during live recording
-        // These are duplicates and will be replaced with proper flags from end-of-session analysis
-        const deletedCount = await storage.deleteParticipationFlags(id);
-        if (deletedCount > 0) {
-          console.log(`[Complete Transcript] ID: ${id}: Cleaned up ${deletedCount} old participation flags`);
+        // If we didn't fetch from Soniox, only clean up participation flags
+        // (profanity/language flags from progressive saving are still valid)
+        if (!fetchedFromSoniox) {
+          const deletedCount = await storage.deleteParticipationFlags(id);
+          if (deletedCount > 0) {
+            console.log(`[Complete Transcript] ID: ${id}: Cleaned up ${deletedCount} old participation flags`);
+          }
         }
 
         // Save all flagged content from comprehensive analysis
