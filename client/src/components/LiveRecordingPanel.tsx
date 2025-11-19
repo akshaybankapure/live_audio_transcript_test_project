@@ -252,6 +252,43 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
       const currentSegments = segmentsRef.current;
       const duration = currentSegments[currentSegments.length - 1]?.endTime || 0;
       const sonioxTranscriptionId = sonioxTranscriptionIdRef.current;
+      
+      // Log segment count for debugging
+      console.log(`[completeTranscript] Completing transcript ${transcriptId}:`, {
+        totalSegments: currentSegments.length,
+        sentSegments: lastSentIdxRef.current,
+        unsentSegments: currentSegments.length - lastSentIdxRef.current,
+        sonioxTranscriptionId,
+        totalTextLength: currentSegments.reduce((sum, seg) => sum + (seg.text?.length || 0), 0),
+      });
+
+      // If there are still unsent segments, send them now as a final backup
+      if (currentSegments.length > lastSentIdxRef.current) {
+        console.warn(`[completeTranscript] WARNING: Sending ${currentSegments.length - lastSentIdxRef.current} unsent segments as final backup`);
+        const unsentSegments = currentSegments.slice(lastSentIdxRef.current);
+        try {
+          const backupResponse = await fetch(`/api/transcripts/${transcriptId}/segments`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              segments: unsentSegments,
+              fromIndex: lastSentIdxRef.current,
+            }),
+          });
+          
+          if (backupResponse.ok) {
+            const backupResult = await backupResponse.json();
+            lastSentIdxRef.current = backupResult.lastSegmentIdx || currentSegments.length;
+            console.log(`[completeTranscript] Backup segments sent successfully, new index: ${lastSentIdxRef.current}`);
+          } else {
+            console.error(`[completeTranscript] Failed to send backup segments: ${backupResponse.status}`);
+          }
+        } catch (error) {
+          console.error(`[completeTranscript] Error sending backup segments:`, error);
+        }
+      }
 
       const response = await fetch(`/api/transcripts/${transcriptId}/complete`, {
         method: "PATCH",
@@ -261,6 +298,9 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
         body: JSON.stringify({
           duration,
           sonioxTranscriptionId, // Send Soniox transcription ID to fetch final transcript
+          // Also send accumulated segments as fallback in case Soniox fetch fails
+          accumulatedSegments: currentSegments,
+          accumulatedSegmentCount: currentSegments.length,
         }),
       });
 
@@ -387,8 +427,26 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
               const key = `${startMs}_${endMs}`;
               const existing = tokenMapRef.current.get(key);
               
-              // Replace if: no existing token, or new token is final, or existing is not final
-              if (!existing || token.is_final || !existing.is_final) {
+              // Replace if:
+              // 1. No existing token
+              // 2. New token is final (always prefer final over partial)
+              // 3. Existing is not final and new is also not final (update partial with newer partial)
+              // 4. Both are final but new one has different text (update with newer final)
+              if (!existing) {
+                tokenMapRef.current.set(key, token);
+              } else if (token.is_final && !existing.is_final) {
+                // Final token always replaces partial
+                tokenMapRef.current.set(key, token);
+              } else if (token.is_final && existing.is_final) {
+                // Both final - prefer the one with more complete text or newer one
+                if (token.text && token.text.length > (existing.text?.length || 0)) {
+                  tokenMapRef.current.set(key, token);
+                } else if (token.text !== existing.text) {
+                  // Different text, prefer newer (current) token
+                  tokenMapRef.current.set(key, token);
+                }
+              } else if (!token.is_final && !existing.is_final) {
+                // Both partial - update with newer partial
                 tokenMapRef.current.set(key, token);
               }
             });
@@ -465,9 +523,28 @@ export default function LiveRecordingPanel({ selectedLanguage }: LiveRecordingPa
               await savePromiseRef.current;
             }
 
-            // Send remaining segments (if any)
-            if (segmentsRef.current.length > lastSentIdxRef.current) {
+            // CRITICAL: Ensure ALL segments are sent before completing
+            // Retry sending until all segments are sent
+            let retries = 0;
+            const MAX_SEND_RETRIES = 5;
+            while (segmentsRef.current.length > lastSentIdxRef.current && retries < MAX_SEND_RETRIES) {
+              console.log(`[onFinished] Sending remaining segments: ${segmentsRef.current.length - lastSentIdxRef.current} unsent (attempt ${retries + 1})`);
               await appendSegments();
+              
+              // Check if all segments were sent
+              if (segmentsRef.current.length > lastSentIdxRef.current) {
+                retries++;
+                // Small delay before retry
+                await new Promise(resolve => setTimeout(resolve, 200));
+              } else {
+                break; // All segments sent
+              }
+            }
+            
+            if (segmentsRef.current.length > lastSentIdxRef.current) {
+              console.warn(`[onFinished] WARNING: ${segmentsRef.current.length - lastSentIdxRef.current} segments still unsent after ${MAX_SEND_RETRIES} attempts`);
+            } else {
+              console.log(`[onFinished] All ${segmentsRef.current.length} segments sent successfully`);
             }
 
             // Mark transcript as complete and fetch final transcript from Soniox

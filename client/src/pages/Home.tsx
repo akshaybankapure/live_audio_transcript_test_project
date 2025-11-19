@@ -5,6 +5,10 @@ import AudioUploadZone from "@/components/AudioUploadZone";
 import AudioPlayer from "@/components/AudioPlayer";
 import TranscriptDisplay from "@/components/TranscriptDisplay";
 import LanguageSelector from "@/components/LanguageSelector";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 // Lazy load LiveRecordingPanel since it imports heavy Soniox library
 const LiveRecordingPanel = lazy(() => import("@/components/LiveRecordingPanel"));
 import type { TranscriptSegment } from "@shared/schema";
@@ -188,27 +192,13 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="live" className="mt-6">
-            <div className="grid lg:grid-cols-[350px,1fr] gap-6">
-              <div className="space-y-6">
-                <div>
-                  <h2 className="text-sm font-medium mb-3">Live Recording</h2>
-                  <LanguageSelector
-                    value={selectedLanguage}
-                    onChange={setSelectedLanguage}
-                  />
-                </div>
+            <Suspense fallback={
+              <div className="flex items-center justify-center h-full min-h-[600px]">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
               </div>
-
-              <div className="h-[calc(100vh-12rem)]">
-                <Suspense fallback={
-                  <div className="flex items-center justify-center h-full">
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  </div>
-                }>
-                  <LiveRecordingPanel selectedLanguage={selectedLanguage} />
-                </Suspense>
-              </div>
-            </div>
+            }>
+              <LiveRecordingPanel selectedLanguage={selectedLanguage} />
+            </Suspense>
           </TabsContent>
         </Tabs>
       </div>

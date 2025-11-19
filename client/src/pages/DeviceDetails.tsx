@@ -20,7 +20,12 @@ import {
   BarChart3,
   PieChart,
   Activity,
-  RefreshCw
+  RefreshCw,
+  Target,
+  MessageSquare,
+  Volume2,
+  CheckCircle,
+  XCircle
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -29,6 +34,7 @@ import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Progress } from "@/components/ui/progress";
 import { format } from "date-fns";
 import type { Transcript, FlaggedContent, User, TranscriptSegment } from "@shared/schema";
 import TranscriptSegmentComponent from "@/components/TranscriptSegment";
@@ -188,9 +194,8 @@ export default function DeviceDetails() {
   const speakerAnalytics = (): SpeakerAnalytics[] => {
     if (!deviceData) return [];
 
-    const sessionsToAnalyze = selectedSessionId
-      ? deviceData.sessions.filter(s => s.id === selectedSessionId)
-      : filteredSessions;
+    // Use filtered sessions for analytics
+    const sessionsToAnalyze = filteredSessions;
 
     const speakerMap = new Map<string, SpeakerAnalytics>();
 
@@ -262,11 +267,54 @@ export default function DeviceDetails() {
   const offTopicFlags = filteredFlags.filter(f => f.flagType === 'off_topic').length;
   const participationFlags = filteredFlags.filter(f => f.flagType === 'participation').length;
 
+  // Get session for transcript display - use selected session if available, otherwise most recent
+  const displaySession = selectedSessionId 
+    ? filteredSessions.find(s => s.id === selectedSessionId)
+    : filteredSessions.length > 0 
+      ? filteredSessions.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime())[0]
+      : null;
+  
+  const recentSessionSegments: TranscriptSegment[] = displaySession 
+    ? (typeof displaySession.segments === 'string'
+        ? JSON.parse(displaySession.segments)
+        : displaySession.segments || [])
+    : [];
+
+  // Get recent flags for display - filter by selected session if applicable
+  const displayFlags = selectedSessionId
+    ? filteredFlags.filter(f => f.transcriptId === selectedSessionId)
+    : filteredFlags;
+    
+  const recentFlags = displayFlags
+    .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime())
+    .slice(0, 5);
+
+  // Calculate topic adherence from display session
+  const topicAdherence = displaySession?.topicAdherenceScore !== null && displaySession?.topicAdherenceScore !== undefined
+    ? Math.round((displaySession.topicAdherenceScore || 0) * 100)
+    : null;
+
+  // Check if participation is balanced
+  const participationBalance = displaySession?.participationBalance as any;
+  let isParticipationBalanced = true;
+  if (participationBalance) {
+    if (participationBalance.speakers && Array.isArray(participationBalance.speakers)) {
+      const maxPercentage = Math.max(...participationBalance.speakers.map((s: any) => (s.percentage || 0) * 100));
+      isParticipationBalanced = maxPercentage < 50; // Balanced if no one dominates >50%
+    }
+  }
+
   const formatTimestamp = (ms: number) => {
     const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+  
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const formatDateTime = (dateString: string | null | Date) => {
@@ -297,25 +345,24 @@ export default function DeviceDetails() {
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-screen flex flex-col overflow-hidden bg-gray-50">
       {/* Header */}
-      <div className="flex-shrink-0 px-2 sm:px-4 py-2 sm:py-3 border-b bg-background">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+      <header className="bg-white border-b px-6 py-4 flex-shrink-0">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setLocation('/dashboard')}
-              className="h-8 flex-shrink-0"
             >
-              <ArrowLeft className="h-4 w-4 sm:mr-1.5" />
-              <span className="hidden sm:inline">Back</span>
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to All Groups
             </Button>
-            <div className="min-w-0">
-              <h1 className="text-lg sm:text-2xl font-bold tracking-tight truncate">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">
                 {deviceData?.user.displayName || 'Device Details'}
               </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 line-clamp-1">
+              <p className="text-sm text-gray-500 mt-0.5">
                 Analysis and insights for this group
               </p>
             </div>
@@ -447,740 +494,277 @@ export default function DeviceDetails() {
             </TabsContent>
           </Tabs>
         </div>
-      </div>
+      </header>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-hidden flex flex-col p-2 sm:p-4">
+      {/* Main Content - 2 Column Layout */}
       {isLoading ? (
-        <div className="space-y-4">
-          <Skeleton className="h-16 w-full" />
-          <div className="grid grid-cols-[300px,1fr] gap-4">
-            <Skeleton className="h-96" />
-            <Skeleton className="h-96" />
+        <div className="flex-1 p-6">
+          <div className="grid grid-cols-2 gap-6">
+            <Skeleton className="h-full" />
+            <Skeleton className="h-full" />
           </div>
         </div>
       ) : deviceData ? (
-        <>
-          {/* Compact Horizontal Summary Bar */}
-          <div className="flex-shrink-0 mb-3">
-            <Card className="p-2 sm:p-3">
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 sm:gap-4 items-center">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs text-muted-foreground font-medium">Sessions</p>
-                    <p className="text-lg font-bold">{filteredSessions.length}</p>
-                  </div>
+        <div className="flex-1 overflow-hidden p-6">
+          <div className="grid grid-cols-2 gap-6 h-full max-h-[calc(100vh-200px)]">
+            {/* Left Column - Live Transcript */}
+            <Card className="p-4 flex flex-col">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold">Live Transcript</h3>
+                <Badge variant="outline">
+                  <MessageSquare className="h-3 w-3 mr-1" />
+                  {recentSessionSegments.length} messages
+                </Badge>
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="space-y-3 pr-3">
+                  {recentSessionSegments.length === 0 ? (
+                    <div className="text-center py-12 text-gray-400">
+                      No transcript available
+                    </div>
+                  ) : (
+                    recentSessionSegments.map((segment, idx) => {
+                      const hasFlag = displayFlags.some(f => 
+                        f.transcriptId === displaySession?.id &&
+                        Math.abs(f.timestampMs - segment.startTime * 1000) < 1000
+                      );
+                      return (
+                        <div 
+                          key={idx}
+                          className={`p-3 rounded-lg border-l-2 ${
+                            hasFlag 
+                              ? 'bg-red-50 border-l-red-500' 
+                              : 'bg-gray-50 border-l-gray-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <Badge variant="outline" className="text-xs">
+                              {segment.speaker}
+                            </Badge>
+                            <span className="text-xs text-gray-500">{formatTime(segment.startTime)}</span>
+                          </div>
+                          <p className="text-sm text-gray-700 leading-relaxed">{segment.text}</p>
+                          {hasFlag && (
+                            <Badge variant="destructive" className="text-xs mt-2">
+                              <AlertTriangle className="h-3 w-3 mr-1" />
+                              Flagged
+                            </Badge>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
-                
-                <div className="flex items-center gap-2">
-                  <Flag className={`h-4 w-4 ${totalFlags > 0 ? 'text-destructive' : 'text-muted-foreground'}`} />
-                  <div>
-                    <p className="text-xs text-muted-foreground font-medium">Flags</p>
-                    <p className={`text-lg font-bold ${totalFlags > 0 ? 'text-destructive' : ''}`}>{totalFlags}</p>
+              </ScrollArea>
+            </Card>
+
+            {/* Right Column - Overview, Metrics & Alerts */}
+            <div className="space-y-4 overflow-auto">
+              {/* Group Info */}
+              <Card className="p-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className={`h-12 w-12 rounded-full ${
+                    displaySession ? 'bg-green-100' : 'bg-gray-100'
+                  } flex items-center justify-center`}>
+                    <Users className={`h-6 w-6 ${
+                      displaySession ? 'text-green-600' : 'text-gray-400'
+                    }`} />
                   </div>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs text-muted-foreground font-medium">Speakers</p>
-                    <p className="text-lg font-bold">{analytics.length}</p>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs text-muted-foreground font-medium">Talk Time</p>
-                    <p className="text-lg font-bold">
-                      {Math.round(analytics.reduce((sum, s) => sum + s.totalTalkTime, 0) / 60)}m
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold">{deviceData.user.displayName || 'Unknown Device'}</h3>
+                    <p className="text-sm text-gray-500">
+                      {analytics.length} students
+                      {selectedSessionId && displaySession && (
+                        <span className="ml-2 text-xs">• {displaySession.title}</span>
+                      )}
                     </p>
                   </div>
+                  <Badge variant={displaySession ? "default" : "outline"}>
+                    {displaySession ? 'Live' : 'Paused'}
+                  </Badge>
                 </div>
-                
-                <div className="col-span-2 flex items-center gap-3 text-xs">
-                  <div className="flex items-center gap-1">
-                    <AlertTriangle className="h-3 w-3 text-destructive" />
-                    <span className="font-medium">{profanityFlags}</span>
-                    <span className="text-muted-foreground">Profanity</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Languages className="h-3 w-3 text-orange-600" />
-                    <span className="font-medium">{languageFlags}</span>
-                    <span className="text-muted-foreground">Language</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <MessageSquareX className="h-3 w-3 text-yellow-600" />
-                    <span className="font-medium">{offTopicFlags}</span>
-                    <span className="text-muted-foreground">Off-Topic</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <UserX className="h-3 w-3 text-blue-600" />
-                    <span className="font-medium">{participationFlags}</span>
-                    <span className="text-muted-foreground">Participation</span>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </div>
-
-          {/* Two-Column Layout */}
-          <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-[280px,1fr] gap-2 min-h-0 lg:pr-2">
-            {/* Left: Speaker Analytics Sidebar */}
-            <Card className="flex flex-col min-h-0">
-              <CardHeader className="flex-shrink-0 pb-2">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4" />
-                  Speakers ({analytics.length})
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex-1 overflow-hidden p-3">
-                <ScrollArea className="h-full">
-                  <div className="space-y-2">
-                {analytics.length > 0 ? (
-                  analytics.map((speaker, index) => {
-                    const color = getSpeakerColor(speaker.speakerId);
-                    // Percentage is already in 0-100 format from analytics calculation
-                    const isDominant = speaker.percentage > 50;
-                    const isSilent = speaker.percentage < 5;
-                    
-                    const totalSpeakerFlags = speaker.profanityCount + speaker.languagePolicyCount + speaker.offTopicCount + speaker.participationFlags;
-                    
-                    return (
-                      <div key={speaker.speakerId} className="p-2.5 border border-border rounded-lg hover:bg-muted/50 transition-colors">
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                            <div
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-0.5"
-                              style={{ backgroundColor: color }}
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 mb-0.5">
-                                <p className="text-xs font-semibold truncate">{speaker.speakerId}</p>
-                                {isDominant && (
-                                  <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1 py-0 h-3.5">
-                                    <TrendingUp className="h-2 w-2 mr-0.5" />
-                                    Dom
-                                  </Badge>
-                                )}
-                                {isSilent && (
-                                  <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5">
-                                    Silent
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                                <span>{speaker.totalSegments}s</span>
-                                <span>•</span>
-                                <span>{Math.round(speaker.totalTalkTime)}s</span>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="text-right flex-shrink-0">
-                            <p className="text-sm font-bold leading-none">{speaker.percentage.toFixed(1)}%</p>
-                            <p className="text-[9px] text-muted-foreground">talk</p>
-                          </div>
-                        </div>
-
-                        {totalSpeakerFlags > 0 && (
-                          <div className="pt-2 border-t border-border/50">
-                            <div className="flex items-center justify-between mb-1.5">
-                              <span className="text-[9px] text-muted-foreground uppercase tracking-wide">Flags</span>
-                              <span className={`text-xs font-bold ${
-                                speaker.profanityCount > 0 || speaker.languagePolicyCount > 0 
-                                  ? 'text-destructive' 
-                                  : speaker.offTopicCount > 0 
-                                  ? 'text-yellow-600'
-                                  : 'text-blue-600'
-                              }`}>
-                                {totalSpeakerFlags}
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                              {speaker.profanityCount > 0 && (
-                                <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5">
-                                  <AlertTriangle className="h-2 w-2 mr-0.5" />
-                                  {speaker.profanityCount}
-                                </Badge>
-                              )}
-                              {speaker.languagePolicyCount > 0 && (
-                                <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0 h-3.5">
-                                  {speaker.languagePolicyCount}L
-                                </Badge>
-                              )}
-                              {speaker.offTopicCount > 0 && (
-                                <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1 py-0 h-3.5">
-                                  {speaker.offTopicCount}O
-                                </Badge>
-                              )}
-                              {speaker.participationFlags > 0 && (
-                                <Badge 
-                                  variant="outline" 
-                                  className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5"
-                                  title={`${speaker.participationFlags} participation ${speaker.participationFlags === 1 ? 'flag' : 'flags'}`}
-                                >
-                                  {speaker.participationFlags}P
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="text-center py-6 text-muted-foreground text-xs">
-                    No speaker data
+                {displaySession?.topicPrompt && (
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3">
+                    <div className="text-xs text-blue-700 mb-1">Topic</div>
+                    <div className="text-sm text-blue-900">{displaySession.topicPrompt}</div>
                   </div>
                 )}
+              </Card>
+
+              {/* Critical Alerts */}
+              {recentFlags.length > 0 && (
+                <Card className="p-4 border-l-4 border-l-red-500 bg-red-50">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertTriangle className="h-5 w-5 text-red-600" />
+                    <h3 className="text-sm text-red-900 font-semibold">Critical Alerts</h3>
                   </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-
-            {/* Right: Main Content Area - Flags and Sessions Side by Side */}
-            <div className="flex-1 min-w-0 flex flex-col min-h-0">
-              <div className="grid grid-cols-1 xl:grid-cols-[40%,1fr] gap-2 flex-1 min-h-0">
-                {/* Left: Flags Section */}
-                <Card className="flex flex-col min-h-0">
-                  <CardHeader className="flex-shrink-0 pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Flag className="h-4 w-4" />
-                      Flags ({filteredFlags.length})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex-1 overflow-hidden p-3">
-                    <ScrollArea className="h-full">
-                      {filteredFlags.length > 0 ? (
-                        <div className="space-y-1.5">
-                          {filteredFlags.map((flag) => {
-                            const flagConfig = {
-                              profanity: { color: 'destructive', icon: AlertTriangle, label: 'Profanity' },
-                              language_policy: { color: 'orange', icon: Languages, label: 'Language' },
-                              off_topic: { color: 'yellow', icon: MessageSquareX, label: 'Off-Topic' },
-                              participation: { color: 'blue', icon: UserX, label: 'Participation' },
-                            }[flag.flagType] || { color: 'gray', icon: Flag, label: 'Flag' };
-                            const Icon = flagConfig.icon;
-                            
-                            return (
-                              <div
-                                key={flag.id}
-                                className={`p-2.5 border rounded-lg hover:bg-muted/30 transition-colors ${
-                                  flag.flagType === 'profanity' ? 'border-destructive/30 bg-destructive/5' :
-                                  flag.flagType === 'language_policy' ? 'border-orange-500/30 bg-orange-500/5' :
-                                  flag.flagType === 'off_topic' ? 'border-yellow-500/30 bg-yellow-500/5' :
-                                  flag.flagType === 'participation' ? 'border-blue-500/30 bg-blue-500/5' :
-                                  'border-border'
-                                }`}
-                              >
-                                <div className="flex items-start gap-2">
-                                  <div className="flex-shrink-0 mt-0.5">
-                                    <Icon className={`h-3.5 w-3.5 ${
-                                      flag.flagType === 'profanity' ? 'text-destructive' :
-                                      flag.flagType === 'language_policy' ? 'text-orange-600' :
-                                      flag.flagType === 'off_topic' ? 'text-yellow-600' :
-                                      flag.flagType === 'participation' ? 'text-blue-600' :
-                                      'text-muted-foreground'
-                                    }`} />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                                      <Badge variant={flag.flagType === 'profanity' ? 'destructive' : 'outline'} className="text-[10px] px-1.5 py-0 h-4">
-                                        {flagConfig.label}
-                                      </Badge>
-                                      <span className="text-xs font-medium truncate">{flag.flaggedWord}</span>
-                                      {flag.speaker && (
-                                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">
-                                          {flag.speaker}
-                                        </Badge>
-                                      )}
-                                      <span className="text-[10px] text-muted-foreground ml-auto">
-                                        @ {formatTimestamp(flag.timestampMs)}
-                                      </span>
-                                    </div>
-                                    {flag.context && (
-                                      <p className="text-xs text-muted-foreground line-clamp-1 mb-1">{flag.context}</p>
-                                    )}
-                                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                                      <span className="truncate">{flag.transcript.title}</span>
-                                      <span>•</span>
-                                      <span>{formatDateTime(flag.createdAt)}</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
+                  <div className="space-y-2">
+                    {recentFlags.slice(0, 3).map((flag, idx) => (
+                      <div key={flag.id} className="p-2 bg-white rounded border border-red-200">
+                        <div className="flex items-start gap-2">
+                          <Badge variant="destructive" className="text-xs shrink-0">
+                            {flag.flagType === 'profanity' ? 'high' : flag.flagType === 'language_policy' ? 'high' : 'medium'}
+                          </Badge>
+                          <p className="text-xs text-red-900 flex-1">{flag.flaggedWord || flag.context || 'Alert'}</p>
                         </div>
-                      ) : (
-                        <div className="text-center py-12">
-                          <Flag className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                          <p className="text-xs text-muted-foreground">No flagged content</p>
-                        </div>
-                      )}
-                    </ScrollArea>
-                  </CardContent>
+                      </div>
+                    ))}
+                  </div>
                 </Card>
+              )}
 
-                {/* Right: Sessions Section */}
-                <Card className="flex flex-col min-h-0">
-                  <CardHeader className="flex-shrink-0 pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        Sessions ({filteredSessions.length})
-                      </CardTitle>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2"
-                        onClick={() => {
-                          queryClient.invalidateQueries({ queryKey: ["/api/dashboard/device", deviceId] });
-                          // Force refresh from Soniox
-                          queryClient.refetchQueries({ 
-                            queryKey: ["/api/dashboard/device", deviceId],
-                            queryFn: async () => {
-                              const response = await fetch(`/api/dashboard/device/${deviceId}?refreshFromSoniox=true`, {
-                                credentials: 'include',
-                              });
-                              if (!response.ok) throw new Error('Failed to refresh');
-                              return response.json();
-                            },
-                          });
-                        }}
-                        title="Refresh from Soniox"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                      </Button>
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Topic Adherence */}
+                {topicAdherence !== null && (
+                  <Card className="p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Target className="h-4 w-4 text-green-600" />
+                      <h3 className="text-sm font-semibold">On Topic</h3>
                     </div>
-                  </CardHeader>
-                  <CardContent className="flex-1 overflow-hidden p-2 sm:p-3">
-                    <ScrollArea className="h-full pr-1">
-                      {filteredSessions.length > 0 ? (
-                      <div className="space-y-2 sm:space-y-3 pr-1">
-                        {filteredSessions.map((session) => {
-                          const segments: TranscriptSegment[] = typeof session.segments === 'string'
-                            ? JSON.parse(session.segments)
-                            : session.segments || [];
-                          const speakers = Array.from(new Set(segments.map((seg: any) => seg.speaker) || []));
-                          const isExpanded = expandedSessionId === session.id;
-                          
-                          // Calculate session metrics
-                          const totalTalkTime = segments.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0);
-                          const durationMinutes = session.duration ? Math.floor(session.duration / 60) : Math.floor(totalTalkTime / 60);
-                          const durationSeconds = session.duration ? Math.floor(session.duration % 60) : Math.floor(totalTalkTime % 60);
-                          const formattedDuration = durationMinutes > 0 ? `${durationMinutes}m ${durationSeconds}s` : `${durationSeconds}s`;
-                          
-                          // Parse participation balance
-                          // The stored balance can be either:
-                          // 1. The full ParticipationBalance object with speakers array, dominantSpeaker, silentSpeakers
-                          // 2. A Record mapping speakerId to { talkTime, percentage }
-                          const participationBalance = session.participationBalance as any;
-                          let participationSpeakers: Array<{ speakerId: string; talkTime: number; percentage: number }> = [];
-                          let dominantSpeaker: { speakerId: string; percentage: number } | undefined;
-                          let silentSpeakers: Array<{ speakerId: string; percentage: number }> = [];
-                          
-                          if (participationBalance) {
-                            // Check if it's the full ParticipationBalance object
-                            if (participationBalance.speakers && Array.isArray(participationBalance.speakers)) {
-                              participationSpeakers = participationBalance.speakers.map((s: any) => ({
-                                speakerId: s.speakerId,
-                                talkTime: s.talkTime || 0,
-                                percentage: s.percentage || 0,
-                              }));
-                              
-                              // Use stored dominantSpeaker and silentSpeakers if available
-                              if (participationBalance.dominantSpeaker) {
-                                const dominant = participationSpeakers.find(s => s.speakerId === participationBalance.dominantSpeaker);
-                                if (dominant) {
-                                  dominantSpeaker = dominant;
-                                }
-                              }
-                              
-                              if (participationBalance.silentSpeakers && Array.isArray(participationBalance.silentSpeakers)) {
-                                silentSpeakers = participationBalance.silentSpeakers
-                                  .map((speakerId: string) => participationSpeakers.find(s => s.speakerId === speakerId))
-                                  .filter((s): s is { speakerId: string; talkTime: number; percentage: number } => s !== undefined);
-                              }
-                            } else if (typeof participationBalance === 'object') {
-                              // Legacy format: Record<string, { talkTime, percentage }>
-                              participationSpeakers = Object.entries(participationBalance)
-                                .map(([speakerId, data]: [string, any]) => ({ 
-                                  speakerId, 
-                                  talkTime: data?.talkTime || 0,
-                                  percentage: data?.percentage || 0
-                                }))
-                                .filter(s => s.percentage > 0);
-                              
-                              // Calculate dynamic thresholds based on number of speakers
-                              // Note: percentages in legacy format are stored as decimals (0-1), not percentages (0-100)
-                              const numberOfSpeakers = participationSpeakers.length;
-                              if (numberOfSpeakers > 0) {
-                                const fairShare = 1 / numberOfSpeakers;
-                                const dominanceThreshold = Math.min(fairShare * 1.5, 0.6); // 1.5x fair share, max 60% (as decimal)
-                                const silenceThreshold = Math.max(fairShare * 0.3, 0.05); // 0.3x fair share, min 5% (as decimal)
-                                
-                                // Find dominant speaker (only if 2+ speakers)
-                                // Compare with decimal thresholds since stored percentages are decimals
-                                if (numberOfSpeakers >= 2) {
-                                  const dominant = participationSpeakers.find(s => (s.percentage || 0) > dominanceThreshold);
-                                  if (dominant) {
-                                    dominantSpeaker = dominant;
-                                  }
-                                }
-                                
-                                // Find silent speakers (only if 3+ speakers)
-                                // Compare with decimal thresholds since stored percentages are decimals
-                                if (numberOfSpeakers >= 3) {
-                                  silentSpeakers = participationSpeakers.filter(s => (s.percentage || 0) < silenceThreshold && (s.percentage || 0) > 0);
-                                }
-                              }
-                            }
-                            
-                            // Sort by percentage descending
-                            participationSpeakers.sort((a, b) => b.percentage - a.percentage);
-                          }
-                          
-                          // Get flag counts for this session
-                          const sessionFlags = filteredFlags.filter(f => f.transcriptId === session.id);
-                          const sessionProfanity = sessionFlags.filter(f => f.flagType === 'profanity').length;
-                          const sessionLanguage = sessionFlags.filter(f => f.flagType === 'language_policy').length;
-                          const sessionOffTopic = sessionFlags.filter(f => f.flagType === 'off_topic').length;
-                          const sessionParticipation = sessionFlags.filter(f => f.flagType === 'participation').length;
-                          const totalSessionFlags = sessionProfanity + sessionLanguage + sessionOffTopic + sessionParticipation;
-                          
-                          // Topic adherence
-                          const topicAdherence = session.topicAdherenceScore;
-                          const hasTopicAdherence = topicAdherence !== null && topicAdherence !== undefined;
-                          
-                          return (
-                            <Card key={session.id} className="overflow-visible">
-                              {/* Session Header */}
-                              <CardHeader className="pb-2 px-2 sm:px-3">
-                                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 mb-1.5">
-                                      <h3 className="text-xs sm:text-sm font-semibold truncate">{session.title}</h3>
-                                      <div className="flex items-center gap-1 flex-shrink-0 flex-wrap">
-                                        <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
-                                          {session.source === 'live' ? 'Live' : 'Upload'}
-                                        </Badge>
-                                        <Badge variant={session.status === 'complete' ? 'default' : 'secondary'} className="text-[9px] px-1.5 py-0 h-4">
-                                          {session.status === 'complete' ? 'Comp' : 'Draft'}
-                                        </Badge>
-                                        {session.language && (
-                                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
-                                            {session.language.toUpperCase()}
-                                          </Badge>
-                                        )}
-                                      </div>
-                                    </div>
-                                    
-                                    {session.topicPrompt && (
-                                      <p className="text-[10px] text-muted-foreground mb-1.5 line-clamp-2 sm:line-clamp-1">
-                                        <span className="font-medium">Topic:</span> {session.topicPrompt}
-                                      </p>
-                                    )}
-                                    
-                                    <div className="flex items-center gap-1.5 sm:gap-2 text-[9px] sm:text-[10px] text-muted-foreground flex-wrap">
-                                      <div className="flex items-center gap-0.5">
-                                        <Clock className="h-2.5 w-2.5" />
-                                        <span>{formattedDuration}</span>
-                                      </div>
-                                      <span>•</span>
-                                      <div className="flex items-center gap-0.5">
-                                        <Users className="h-2.5 w-2.5" />
-                                        <span>{speakers.length} {speakers.length === 1 ? 'Sp' : 'Sp'}</span>
-                                      </div>
-                                      <span>•</span>
-                                      <div className="flex items-center gap-0.5">
-                                        <FileText className="h-2.5 w-2.5" />
-                                        <span>{segments.length} seg</span>
-                                      </div>
-                                      <span>•</span>
-                                      <span className="truncate">{formatDateTime(session.createdAt)}</span>
-                                    </div>
-                                  </div>
-                                  
-                                  {segments.length > 0 && (
-                                    <div className="flex items-center gap-1.5 flex-shrink-0 sm:self-start">
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setExpandedSessionId(isExpanded ? null : session.id);
-                                        }}
-                                        className="h-6 text-[9px] sm:text-[10px] px-2 whitespace-nowrap"
-                                      >
-                                        {isExpanded ? 'Hide' : 'View'} Transcript
-                                      </Button>
-                                    </div>
-                                  )}
-                                </div>
-                              </CardHeader>
-
-                              {/* Session Metrics Grid */}
-                              <CardContent className="pt-0 pb-3 px-3">
-                                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-2 mb-2">
-                                  {/* Topic Adherence */}
-                                  {hasTopicAdherence && (
-                                    <div className="space-y-1.5 min-w-0">
-                                      <div className="flex items-center justify-between gap-1">
-                                        <div className="flex items-center gap-1.5 min-w-0">
-                                          <MessageSquareX className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">Topic</p>
-                                        </div>
-                                        <Badge 
-                                          variant={topicAdherence >= 0.7 ? 'default' : topicAdherence >= 0.5 ? 'secondary' : 'destructive'}
-                                          className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0"
-                                        >
-                                          {Math.round(topicAdherence * 100)}%
-                                        </Badge>
-                                      </div>
-                                      <div className="w-full bg-muted rounded-full h-1.5">
-                                        <div 
-                                          className={`h-1.5 rounded-full transition-all ${
-                                            topicAdherence >= 0.7 
-                                              ? 'bg-green-600' 
-                                              : topicAdherence >= 0.5 
-                                              ? 'bg-yellow-600' 
-                                              : 'bg-red-600'
-                                          }`}
-                                          style={{ width: `${topicAdherence * 100}%` }}
-                                        />
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {/* Flags Summary */}
-                                  <div className="space-y-1.5 min-w-0">
-                                    <div className="flex items-center justify-between gap-1">
-                                      <div className="flex items-center gap-1.5 min-w-0">
-                                        <Flag className={`h-3 w-3 flex-shrink-0 ${totalSessionFlags > 0 ? 'text-destructive' : 'text-muted-foreground'}`} />
-                                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">Flags</p>
-                                      </div>
-                                      <p className={`text-xs font-bold flex-shrink-0 ${totalSessionFlags > 0 ? 'text-destructive' : ''}`}>
-                                        {totalSessionFlags}
-                                      </p>
-                                    </div>
-                                    {totalSessionFlags > 0 && (
-                                      <div className="flex flex-wrap gap-1">
-                                        {sessionProfanity > 0 && (
-                                          <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5">
-                                            {sessionProfanity}P
-                                          </Badge>
-                                        )}
-                                        {sessionLanguage > 0 && (
-                                          <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0 h-3.5">
-                                            {sessionLanguage}L
-                                          </Badge>
-                                        )}
-                                        {sessionOffTopic > 0 && (
-                                          <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1 py-0 h-3.5">
-                                            {sessionOffTopic}O
-                                          </Badge>
-                                        )}
-                                        {sessionParticipation > 0 && (
-                                          <Badge 
-                                            variant="outline" 
-                                            className="border-blue-500 text-blue-700 bg-blue-50 text-[9px] px-1 py-0 h-3.5"
-                                            title={`${sessionParticipation} participation ${sessionParticipation === 1 ? 'flag' : 'flags'} (dominance/silence issues)`}
-                                          >
-                                            {sessionParticipation}P
-                                          </Badge>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Participation Balance */}
-                                  {participationSpeakers.length > 0 && (
-                                    <div className="space-y-1.5 min-w-0">
-                                      <div className="flex items-center justify-between gap-1">
-                                        <div className="flex items-center gap-1.5 min-w-0">
-                                          <BarChart3 className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">Balance</p>
-                                        </div>
-                                        {dominantSpeaker && (
-                                          <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1.5 py-0 h-4 flex-shrink-0">
-                                            <TrendingUp className="h-2 w-2 mr-0.5" />
-                                            Imbalanced
-                                          </Badge>
-                                        )}
-                                        {!dominantSpeaker && silentSpeakers.length === 0 && (
-                                          <Badge variant="default" className="text-[9px] px-1.5 py-0 h-4 flex-shrink-0">
-                                            Balanced
-                                          </Badge>
-                                        )}
-                                      </div>
-                                      {participationSpeakers.length > 0 && (
-                                        <div className="flex gap-0.5">
-                                          {participationSpeakers.slice(0, 4).map((sp) => {
-                                            const color = getSpeakerColor(sp.speakerId);
-                                            // Percentage is stored as decimal (0-1), convert to 0-100 for display
-                                            const percentage = (sp.percentage || 0) * 100;
-                                            return (
-                                              <div
-                                                key={sp.speakerId}
-                                                className="flex-1 h-1.5 rounded"
-                                                style={{ 
-                                                  backgroundColor: color,
-                                                  opacity: Math.min(percentage / 100, 1)
-                                                }}
-                                                title={`${sp.speakerId}: ${percentage.toFixed(1)}%`}
-                                              />
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {/* Talk Time */}
-                                  <div className="space-y-1.5 min-w-0">
-                                    <div className="flex items-center justify-between gap-1">
-                                      <div className="flex items-center gap-1.5 min-w-0">
-                                        <Activity className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide truncate">Talk Time</p>
-                                      </div>
-                                      <p className="text-xs font-bold flex-shrink-0">
-                                        {Math.round(totalTalkTime / 60)}m
-                                      </p>
-                                    </div>
-                                    <p className="text-[10px] text-muted-foreground">
-                                      {Math.round(totalTalkTime)}s total
-                                    </p>
-                                  </div>
-                                </div>
-
-                                {/* Participation Breakdown */}
-                                {participationSpeakers.length > 0 && (
-                                  <div className="pt-3 border-t">
-                                    <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2">Participation</p>
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      {participationSpeakers.slice(0, 4).map((sp) => {
-                                        const color = getSpeakerColor(sp.speakerId);
-                                        // Percentage is stored as decimal (0-1), convert to 0-100 for display
-                                        const percentage = (sp.percentage || 0) * 100;
-                                        return (
-                                          <div key={sp.speakerId} className="flex items-center gap-1.5">
-                                            <div
-                                              className="w-2 h-2 rounded-full flex-shrink-0"
-                                              style={{ backgroundColor: color }}
-                                            />
-                                            <span className="text-xs font-medium truncate max-w-[60px]">{sp.speakerId}</span>
-                                            <span className="text-xs font-bold">{percentage.toFixed(0)}%</span>
-                                          </div>
-                                        );
-                                      })}
-                                      {participationSpeakers.length > 4 && (
-                                        <span className="text-xs text-muted-foreground">
-                                          +{participationSpeakers.length - 4} more
-                                        </span>
-                                      )}
-                                      {dominantSpeaker && (
-                                        <Badge variant="outline" className="border-yellow-500 text-yellow-700 bg-yellow-50 text-[9px] px-1.5 py-0 h-4 ml-auto">
-                                          <TrendingUp className="h-2 w-2 mr-0.5" />
-                                          {dominantSpeaker.speakerId} dominant ({((dominantSpeaker.percentage || 0) * 100).toFixed(0)}%)
-                                        </Badge>
-                                      )}
-                                      {silentSpeakers.length > 0 && (
-                                        <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
-                                          <TrendingDown className="h-2 w-2 mr-0.5" />
-                                          {silentSpeakers.length} silent
-                                        </Badge>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* Transcript Preview - Full Transcript Display */}
-                                {isExpanded && segments.length > 0 && (
-                                  <>
-                                    <Separator className="my-3" />
-                                    <div className="w-full">
-                                      <div className="flex items-center justify-between mb-3">
-                                        <h4 className="text-sm font-semibold">Full Transcript</h4>
-                                        <div className="flex items-center gap-2">
-                                          <Badge variant="secondary" className="text-xs px-2 py-0.5 h-5">{segments.length} segments</Badge>
-                                          {segments.some(s => hasProfanity(s.text)) && (
-                                            <Button
-                                              variant="destructive"
-                                              size="sm"
-                                              className="text-xs h-5 px-2"
-                                              onClick={async () => {
-                                                try {
-                                                  // Quick report: create flags for all profanity in this transcript
-                                                  const profanitySegments = segments.filter(s => hasProfanity(s.text));
-                                                  const response = await fetch(`/api/transcripts/${session.id}/quick-report`, {
-                                                    method: 'POST',
-                                                    credentials: 'include',
-                                                    headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({
-                                                      segments: profanitySegments.map(s => ({
-                                                        text: s.text,
-                                                        startTime: s.startTime,
-                                                        endTime: s.endTime,
-                                                        speaker: s.speaker,
-                                                      })),
-                                                    }),
-                                                  });
-                                                  if (response.ok) {
-                                                    toast({
-                                                      title: 'Reported',
-                                                      description: `Reported ${profanitySegments.length} profanity instance(s)`,
-                                                    });
-                                                    // Refetch to update flags
-                                                    queryClient.invalidateQueries({ queryKey: ['/api/flagged-content'] });
-                                                  }
-                                                } catch (error) {
-                                                  console.error('Failed to report:', error);
-                                                }
-                                              }}
-                                            >
-                                              <Flag className="h-3 w-3 mr-1" />
-                                              Quick Report
-                                            </Button>
-                                          )}
-                                        </div>
-                                      </div>
-                                      <div className="border rounded-md bg-muted/30 overflow-hidden">
-                                        <ScrollArea className="h-[400px] sm:h-[500px] md:h-[600px] lg:h-[700px] w-full">
-                                          <div className="p-4 space-y-2">
-                                            {segments.map((segment, idx) => (
-                                              <div key={`${session.id}-segment-${idx}`} className="w-full">
-                                                <TranscriptSegmentComponent
-                                                  segment={segment}
-                                                  speakerColor={getSpeakerColor(segment.speaker)}
-                                                />
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </ScrollArea>
-                                      </div>
-                                    </div>
-                                  </>
-                                )}
-                              </CardContent>
-                            </Card>
-                          );
-                        })}
+                    <div className="flex items-center justify-center py-4">
+                      <div className="text-center">
+                        <div className="text-3xl mb-2">{topicAdherence}%</div>
+                        <Progress value={topicAdherence} className="h-2 w-28 mx-auto" />
                       </div>
-                    ) : (
-                      <div className="text-center py-12">
-                        <FileText className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                        <p className="text-xs text-muted-foreground">No sessions found</p>
-                      </div>
-                    )}
-                    </ScrollArea>
-                  </CardContent>
+                    </div>
+                    <Badge 
+                      variant={topicAdherence > 70 ? "default" : "destructive"}
+                      className="w-full justify-center mt-3"
+                    >
+                      {topicAdherence > 70 ? 'Good' : 'Drifting'}
+                    </Badge>
+                  </Card>
+                )}
+
+                {/* Participation */}
+                <Card className="p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Users className="h-4 w-4 text-blue-600" />
+                    <h3 className="text-sm font-semibold">Participation</h3>
+                  </div>
+                  <div className="flex items-center justify-center py-4">
+                    <Badge 
+                      variant={isParticipationBalanced ? "default" : "destructive"}
+                      className="px-4 py-2"
+                    >
+                      {isParticipationBalanced ? 'Balanced' : 'Imbalanced'}
+                    </Badge>
+                  </div>
                 </Card>
+
+                {/* Profanity Flags */}
+                <Card className="p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                    <h3 className="text-sm font-semibold">Profanity</h3>
+                  </div>
+                  <div className="text-center py-4">
+                    <div className="text-3xl text-red-600">
+                      {selectedSessionId 
+                        ? displayFlags.filter(f => f.flagType === 'profanity').length
+                        : profanityFlags}
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-500 text-center mt-3">
+                    Inappropriate words
+                  </div>
+                </Card>
+
+                {/* Language Flags */}
+                <Card className="p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Languages className="h-4 w-4 text-purple-600" />
+                    <h3 className="text-sm font-semibold">Language</h3>
+                  </div>
+                  <div className="text-center py-4">
+                    <div className="text-3xl text-purple-600">
+                      {selectedSessionId 
+                        ? displayFlags.filter(f => f.flagType === 'language_policy').length
+                        : languageFlags}
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-500 text-center mt-3">
+                    Non-English detected
+                  </div>
+                </Card>
+              </div>
+
+              {/* Speakers */}
+              {analytics.length > 0 && (
+                <Card className="p-4">
+                  <h3 className="text-sm font-semibold mb-3">Speakers</h3>
+                  <div className="space-y-2.5">
+                    {analytics.map(speaker => {
+                      const color = getSpeakerColor(speaker.speakerId);
+                      const totalSpeakerFlags = speaker.profanityCount + speaker.languagePolicyCount + speaker.offTopicCount + speaker.participationFlags;
+                      return (
+                        <div key={speaker.speakerId}>
+                          <div className="flex items-center justify-between text-sm mb-1">
+                            <div className="flex items-center gap-2">
+                              <div className="h-3 w-3 rounded-full" style={{ backgroundColor: color }}></div>
+                              <span>{speaker.speakerId}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-600">{speaker.percentage.toFixed(0)}%</span>
+                              {totalSpeakerFlags > 0 ? (
+                                <XCircle className="h-3 w-3 text-red-600" />
+                              ) : (
+                                <CheckCircle className="h-3 w-3 text-green-600" />
+                              )}
+                            </div>
+                          </div>
+                          <Progress value={speaker.percentage} className="h-2" />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              )}
+
+              {/* Recent Flags */}
+              {recentFlags.length > 0 && (
+                <Card className="p-4">
+                  <h3 className="text-sm font-semibold mb-3">Recent Flags</h3>
+                  <div className="space-y-2">
+                    {recentFlags.map((flag) => (
+                      <div key={flag.id} className="p-2 bg-orange-50 border border-orange-200 rounded-lg">
+                        <div className="flex items-start gap-2 mb-1">
+                          <Badge 
+                            variant="outline" 
+                            className={`text-xs shrink-0 ${
+                              flag.flagType === 'profanity' ? 'bg-red-100 text-red-700' :
+                              flag.flagType === 'language_policy' ? 'bg-purple-100 text-purple-700' :
+                              'bg-orange-100 text-orange-700'
+                            }`}
+                          >
+                            {flag.flagType}
+                          </Badge>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-gray-700 truncate">{flag.speaker || 'Unknown'}</p>
+                          </div>
+                          <span className="text-xs text-gray-500 shrink-0">{formatTimestamp(flag.timestampMs)}</span>
+                        </div>
+                        <p className="text-xs text-gray-600">{flag.flaggedWord || flag.context || 'Flagged content'}</p>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* Actions */}
+              <div className="grid grid-cols-2 gap-3">
+                <Button variant="outline">
+                  <Volume2 className="h-4 w-4 mr-2" />
+                  Listen
+                </Button>
+                <Button variant="outline">
+                  Export
+                </Button>
               </div>
             </div>
           </div>
-        </>
+        </div>
       ) : (
         <Card className="m-4">
           <CardContent className="text-center py-12">
@@ -1188,8 +772,6 @@ export default function DeviceDetails() {
           </CardContent>
         </Card>
       )}
-      </div>
     </div>
   );
 }
-

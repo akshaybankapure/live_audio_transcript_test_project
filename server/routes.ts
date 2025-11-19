@@ -318,12 +318,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: "Access denied" });
       }
 
+      // Log what we're receiving
+      const totalTextLength = newSegments.reduce((sum: number, seg: any) => sum + (seg.text?.length || 0), 0);
+      log(`Appending ${newSegments.length} segments to transcript ${id} (fromIndex: ${fromIndex}, total text length: ${totalTextLength} chars)`, "AppendSegments");
+      
       // Append segments with index validation
       const updated = await storage.appendSegments(id, newSegments, fromIndex);
 
       // Get all segments for comprehensive analysis
       const allSegments = updated.segments as any[];
       const recentSegments = allSegments.slice(fromIndex);
+      
+      // Log what we have after append
+      const totalSegmentsAfter = allSegments.length;
+      const totalTextAfter = allSegments.reduce((sum: number, seg: any) => sum + (seg.text?.length || 0), 0);
+      log(`After append: transcript ${id} now has ${totalSegmentsAfter} segments (${totalTextAfter} chars total)`, "AppendSegments");
 
       // Process each segment individually for real-time flagging
       // This ensures flagging happens immediately, not waiting for speaker to finish
@@ -547,7 +556,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/transcripts/:id/complete", isAuthenticated, async (req: any, res) => {
     try {
       const { id } = req.params;
-      const { duration, audioFileUrl, sonioxTranscriptionId } = req.body;
+      const { duration, audioFileUrl, sonioxTranscriptionId, accumulatedSegments, accumulatedSegmentCount } = req.body;
       const userId = req.user.claims.sub;
 
       // Verify user owns this transcript
@@ -561,6 +570,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       let fetchedFromSoniox = false;
       let finalSegments = existing.segments as any[];
+      
+      // Log current state
+      const currentSegmentCount = Array.isArray(existing.segments) ? existing.segments.length : 0;
+      log(`Completing transcript ${id}: current segments in DB: ${currentSegmentCount}, accumulated from frontend: ${accumulatedSegmentCount || 0}`, "Complete Transcript");
 
       // If Soniox transcription ID is provided, fetch the final transcript from Soniox
       // This replaces our accumulated segments with Soniox's accurate final transcript
@@ -568,25 +581,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           log(`Fetching final transcript from Soniox for transcription ID: ${sonioxTranscriptionId}`, "Complete Transcript");
           
-          // Wait a bit for Soniox to finalize the transcript
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Retry logic: Check status and wait for transcript to be ready
+          let transcriptData: any = null;
+          const maxRetries = 5;
+          const retryDelay = 2000; // Start with 2 seconds
           
-          const transcriptResponse = await fetch(
-            `https://api.soniox.com/v1/transcriptions/${sonioxTranscriptionId}/transcript`,
-            {
-              headers: {
-                Authorization: `Bearer ${SONIOX_API_KEY}`,
-              },
-            }
-          );
-
-          if (transcriptResponse.ok) {
-            const transcriptData = await transcriptResponse.json();
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            // Check transcription status first
+            const statusResponse = await fetch(
+              `https://api.soniox.com/v1/transcriptions/${sonioxTranscriptionId}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${SONIOX_API_KEY}`,
+                },
+              }
+            );
             
+            if (statusResponse.ok) {
+              const statusData = await statusResponse.json();
+              const status = statusData.status;
+              
+              log(`Soniox transcription status (attempt ${attempt + 1}/${maxRetries}): ${status}`, "Complete Transcript");
+              
+              if (status === 'completed' || status === 'COMPLETED') {
+                // Transcript is ready, fetch it
+                const transcriptResponse = await fetch(
+                  `https://api.soniox.com/v1/transcriptions/${sonioxTranscriptionId}/transcript`,
+                  {
+                    headers: {
+                      Authorization: `Bearer ${SONIOX_API_KEY}`,
+                    },
+                  }
+                );
+
+                if (transcriptResponse.ok) {
+                  transcriptData = await transcriptResponse.json();
+                  break; // Success, exit retry loop
+                } else {
+                  log(`Failed to fetch transcript data: ${transcriptResponse.status}`, "Complete Transcript");
+                }
+              } else if (status === 'failed' || status === 'FAILED') {
+                log(`Soniox transcription failed, using accumulated segments`, "Complete Transcript");
+                break; // Exit retry loop, use accumulated segments
+              } else {
+                // Still processing, wait and retry
+                if (attempt < maxRetries - 1) {
+                  const delay = retryDelay * (attempt + 1); // Exponential backoff
+                  log(`Transcript not ready yet, waiting ${delay}ms before retry...`, "Complete Transcript");
+                  await new Promise(resolve => setTimeout(resolve, delay));
+                }
+              }
+            } else {
+              log(`Failed to check transcription status: ${statusResponse.status}`, "Complete Transcript");
+              if (attempt < maxRetries - 1) {
+                await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
+              }
+            }
+          }
+          
+          if (transcriptData) {
             // Parse Soniox's final transcript (more accurate than our accumulated segments)
             finalSegments = parseTranscript(transcriptData);
             const languages = extractLanguages(transcriptData);
             const finalDuration = calculateDuration(transcriptData);
+            
+            // IMPORTANT: Clean up ALL old flags from progressive saving before replacing segments
+            // This prevents duplicate flags when we re-analyze the final transcript
+            const deletedFlagsCount = await storage.deleteAllFlags(id);
+            if (deletedFlagsCount > 0) {
+              log(`Cleaned up ${deletedFlagsCount} old flags from progressive saving before replacing with Soniox final transcript`, "Complete Transcript");
+            }
+            
+            // Reset profanity and language policy counts (will be recalculated from final transcript)
+            await db
+              .update(transcripts)
+              .set({
+                profanityCount: 0,
+                languagePolicyViolations: 0,
+              })
+              .where(eq(transcripts.id, id));
             
             // Update transcript with Soniox's final segments and store Soniox job ID
             await db
@@ -603,11 +676,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
             fetchedFromSoniox = true;
             log(`Replaced transcript segments with Soniox final transcript: ${finalSegments.length} segments`, "Complete Transcript");
           } else {
-            log(`Failed to fetch Soniox transcript: ${transcriptResponse.status}`, "Complete Transcript");
+            log(`Could not fetch Soniox transcript after ${maxRetries} attempts, using accumulated segments`, "Complete Transcript");
           }
         } catch (error) {
           console.error("Error fetching Soniox final transcript:", error);
           log(`Error fetching Soniox final transcript, using accumulated segments`, "Complete Transcript");
+        }
+      }
+      
+      // If Soniox fetch failed and we have accumulated segments from frontend, use those
+      // This ensures we don't lose data if Soniox fetch fails
+      if (!fetchedFromSoniox && accumulatedSegments && Array.isArray(accumulatedSegments) && accumulatedSegments.length > 0) {
+        const dbSegmentCount = Array.isArray(finalSegments) ? finalSegments.length : 0;
+        const frontendSegmentCount = accumulatedSegments.length;
+        
+        // Use frontend segments if they have more content
+        if (frontendSegmentCount > dbSegmentCount) {
+          log(`Using accumulated segments from frontend (${frontendSegmentCount} segments) instead of DB segments (${dbSegmentCount} segments)`, "Complete Transcript");
+          finalSegments = accumulatedSegments;
+          
+          // Update database with frontend segments
+          await db
+            .update(transcripts)
+            .set({
+              segments: finalSegments as any,
+              updatedAt: new Date(),
+            })
+            .where(eq(transcripts.id, id));
+        } else {
+          log(`Using DB segments (${dbSegmentCount} segments) - frontend has ${frontendSegmentCount} segments`, "Complete Transcript");
         }
       }
 
@@ -629,18 +726,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
           participationConfig
         );
         
-        // Clean up old participation flags that were created during live recording
-        // These are duplicates and will be replaced with proper flags from end-of-session analysis
-        const deletedCount = await storage.deleteParticipationFlags(id);
-        if (deletedCount > 0) {
-          console.log(`[Complete Transcript] ID: ${id}: Cleaned up ${deletedCount} old participation flags`);
+        // If we didn't fetch from Soniox, clean up old participation flags
+        // (If we fetched from Soniox, all flags were already cleaned up above)
+        if (!fetchedFromSoniox) {
+          const deletedCount = await storage.deleteParticipationFlags(id);
+          if (deletedCount > 0) {
+            log(`Cleaned up ${deletedCount} old participation flags (using accumulated segments)`, "Complete Transcript");
+          }
         }
 
         // Save all flagged content from comprehensive analysis
-        // This includes off-topic segments and participation flags created at session end
+        // This includes profanity, language policy, off-topic segments, and participation flags
+        // All created from the final transcript (either Soniox final or accumulated)
         for (const flagged of analysis.allFlaggedItems) {
           await storage.createFlaggedContent(flagged);
         }
+        
+        // Update profanity and language policy counts based on final analysis
+        // (These were reset to 0 if we fetched from Soniox, now recalculate from final transcript)
+        await storage.updateProfanityCount(id, analysis.profanity.flaggedItems.length);
+        await storage.updateLanguagePolicyViolations(id, analysis.languagePolicy.violations.length);
 
         // Update participation balance and topic adherence (calculated at session end)
         await storage.updateParticipationBalance(id, analysis.participation);
@@ -1219,9 +1324,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 function parseTranscript(transcriptData: any) {
   const segments: any[] = [];
   
-  if (!transcriptData.tokens || transcriptData.tokens.length === 0) {
+  if (!transcriptData || !transcriptData.tokens || !Array.isArray(transcriptData.tokens) || transcriptData.tokens.length === 0) {
     return segments;
   }
+
+  // Sort tokens by start time to handle out-of-order tokens
+  const sortedTokens = [...transcriptData.tokens].sort((a, b) => {
+    const aStart = a.start_ms || 0;
+    const bStart = b.start_ms || 0;
+    return aStart - bStart;
+  });
 
   let currentSegment: any = null;
   let currentSpeaker = "";
@@ -1229,12 +1341,22 @@ function parseTranscript(transcriptData: any) {
   let currentStartTime = 0;
   let currentLanguage = "";
 
-  for (const token of transcriptData.tokens) {
+  for (const token of sortedTokens) {
+    // Skip invalid tokens
+    if (!token || typeof token !== 'object') {
+      continue;
+    }
+
     const speaker = token.speaker || "SPEAKER 1";
-    const text = token.text || "";
+    const text = token.text || ""; // Don't trim - Soniox includes spaces intentionally
     const startMs = token.start_ms || 0;
     const endMs = token.end_ms || 0;
     const language = token.language || "en";
+
+    // Skip tokens with no text and no meaningful timing
+    if ((!text || text.trim().length === 0) && startMs === 0 && endMs === 0) {
+      continue; // Skip completely empty tokens
+    }
 
     // Normalize speaker format
     const speakerLabel = speaker.startsWith("SPEAKER") 
@@ -1242,34 +1364,40 @@ function parseTranscript(transcriptData: any) {
       : `SPEAKER ${speaker}`;
 
     if (currentSpeaker !== speakerLabel) {
-      // Save previous segment
-      if (currentSegment) {
+      // Save previous segment (only if it has text)
+      if (currentSegment && currentSegment.text && currentSegment.text.trim().length > 0) {
         segments.push(currentSegment);
       }
 
-      // Start new segment - ensure we use currentText which accumulates properly
+      // Start new segment
       currentSpeaker = speakerLabel;
       currentText = text || "";
       currentStartTime = startMs / 1000;
       currentLanguage = language;
       currentSegment = {
         speaker: speakerLabel,
-        text: currentText, // Use currentText instead of just text
-        startTime: startMs / 1000,
+        text: currentText,
+        startTime: currentStartTime,
         endTime: endMs / 1000,
         language: getLanguageName(language),
       };
     } else {
-      // Continue current segment - tokens may or may not include spaces, so add text directly
-      // Soniox tokens typically include leading spaces when needed
-      currentText += text || "";
-      currentSegment.text = currentText;
-      currentSegment.endTime = endMs / 1000;
+      // Continue current segment
+      // Soniox tokens typically include leading spaces when needed, so append directly
+      // Only append non-empty text (empty text with timing is just a pause, update end time only)
+      if (text && text.trim().length > 0) {
+        currentText += text;
+        currentSegment.text = currentText;
+      }
+      // Always update end time to track the latest token (even for pauses)
+      if (endMs > 0) {
+        currentSegment.endTime = endMs / 1000;
+      }
     }
   }
 
-  // Add final segment
-  if (currentSegment) {
+  // Add final segment (only if it has text)
+  if (currentSegment && currentSegment.text && currentSegment.text.trim().length > 0) {
     segments.push(currentSegment);
   }
 
